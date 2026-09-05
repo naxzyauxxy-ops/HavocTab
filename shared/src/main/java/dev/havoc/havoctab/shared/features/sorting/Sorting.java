@@ -1,0 +1,255 @@
+package dev.havoc.havoctab.shared.features.sorting;
+
+import lombok.Getter;
+import lombok.NonNull;
+import dev.havoc.havoctab.api.tablist.SortingManager;
+import dev.havoc.havoctab.shared.Limitations;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.TabConstants;
+import dev.havoc.havoctab.shared.features.layout.LayoutManagerImpl;
+import dev.havoc.havoctab.shared.features.nametags.NameTag;
+import dev.havoc.havoctab.shared.features.proxy.ProxyPlayer;
+import dev.havoc.havoctab.shared.features.proxy.ProxySupport;
+import dev.havoc.havoctab.shared.features.sorting.types.*;
+import dev.havoc.havoctab.shared.features.types.Dumpable;
+import dev.havoc.havoctab.shared.features.types.JoinListener;
+import dev.havoc.havoctab.shared.features.types.Loadable;
+import dev.havoc.havoctab.shared.features.types.RefreshableFeature;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import dev.havoc.havoctab.shared.util.DumpUtils;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.*;
+import java.util.function.BiFunction;
+
+/**
+ * Class for handling player sorting rules
+ */
+public class Sorting extends RefreshableFeature implements SortingManager, JoinListener, Loadable, Dumpable {
+
+    private NameTag nameTags;
+    private LayoutManagerImpl layout;
+    private ProxySupport proxy;
+    
+    //map of all registered sorting types
+    private final Map<String, BiFunction<Sorting, String, SortingType>> types = new LinkedHashMap<>();
+
+    @Getter
+    @NotNull
+    private final SortingConfiguration configuration;
+    
+    //active sorting types
+    private final SortingType[] usedSortingTypes;
+    
+    /**
+     * Constructs new instance.
+     *
+     * @param   configuration
+     *          Feature configuration
+     */
+    public Sorting(@NotNull SortingConfiguration configuration) {
+        this.configuration = configuration;
+        types.put("GROUPS", Groups::new);
+        types.put("PERMISSIONS", Permissions::new);
+        types.put("PLACEHOLDER", (sorting, value) -> {
+            Placeholder.PlaceholderSplitResult split = Placeholder.splitValue(value);
+            return split == null ? null : new Placeholder(sorting, split);
+        });
+        types.put("PLACEHOLDER_A_TO_Z", PlaceholderAtoZ::new);
+        types.put("PLACEHOLDER_Z_TO_A", PlaceholderZtoA::new);
+        types.put("PLACEHOLDER_LOW_TO_HIGH", PlaceholderLowToHigh::new);
+        types.put("PLACEHOLDER_HIGH_TO_LOW", PlaceholderHighToLow::new);
+        usedSortingTypes = compile(configuration.getSortingTypes());
+    }
+
+    @NotNull
+    @Override
+    public String getRefreshDisplayName() {
+        return "Updating team names";
+    }
+
+    @Override
+    public void refresh(@NotNull TabPlayer p, boolean force) {
+        String previousShortName = p.sortingData.shortTeamName;
+        constructTeamNames(p);
+        if (!p.sortingData.shortTeamName.equals(previousShortName)) {
+            if (nameTags != null) nameTags.updateTeamName(p, p.sortingData.getShortTeamName());
+            if (layout != null) layout.updateTeamName(p, p.sortingData.getFullTeamName());
+        }
+    }
+
+    @Override
+    public void load() {
+        // All of these features are instantiated after this one, so they must be detected later
+        nameTags = HavocTab.getInstance().getNameTagManager();
+        layout = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.LAYOUT);
+        proxy = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
+        for (TabPlayer all : HavocTab.getInstance().getOnlinePlayers()) {
+            onJoin(all);
+        }
+    }
+    
+    @Override
+    public void onJoin(@NotNull TabPlayer connectedPlayer) {
+        constructTeamNames(connectedPlayer);
+    }
+    
+    /**
+     * Compiles sorting type list into classes
+     *
+     * @return  array of compiled sorting types
+     */
+    private @NotNull SortingType[] compile(@NotNull List<String> options) {
+        List<SortingType> list = new ArrayList<>();
+        for (String element : options) {
+            String[] arr = element.split(":");
+            if (!types.containsKey(arr[0].toUpperCase())) {
+                HavocTab.getInstance().getConfigHelper().startup().invalidSortingTypeElement(arr[0].toUpperCase(), types.keySet());
+            } else {
+                SortingType type = types.get(arr[0].toUpperCase()).apply(this, arr.length == 1 ? "" : element.substring(arr[0].length() + 1));
+                if (type != null) {
+                    list.add(type);
+                }
+            }
+        }
+        return list.toArray(new SortingType[0]);
+    }
+    
+    /**
+     * Constructs short team names, both short (up to 16 characters long)
+     * and full for specified player
+     *
+     * @param   p
+     *          player to build team name for
+     */
+    public void constructTeamNames(@NotNull TabPlayer p) {
+        StringBuilder shortName = new StringBuilder();
+        for (SortingType type : usedSortingTypes) {
+            shortName.append(type.getChars(p));
+        }
+        StringBuilder fullName = new StringBuilder(shortName);
+        if (layout != null) {
+            //layout is enabled, start with max character to fix compatibility with plugins
+            //which add empty player into a team such as LibsDisguises
+            shortName.insert(0, Character.MAX_VALUE);
+        }
+        if (shortName.length() >= Limitations.TEAM_NAME_LENGTH) {
+            shortName.setLength(Limitations.TEAM_NAME_LENGTH-1);
+        }
+        String finalShortName = checkTeamName(p, shortName);
+        p.sortingData.shortTeamName = finalShortName;
+        p.sortingData.fullTeamName = fullName.append(finalShortName.charAt(finalShortName.length() - 1)).toString();
+    }
+
+    /**
+     * Checks if team name is available and proceeds to try new values until free name is found
+     *
+     * @param   p
+     *          player to build team name for
+     * @param   currentName
+     *          current up to 15 character long team name start
+     * @return  first available full team name
+     */
+    @NotNull
+    private String checkTeamName(@NotNull TabPlayer p, @NotNull StringBuilder currentName) {
+        char id = 'A';
+        while (true) {
+            String potentialTeamName = currentName.toString() + id;
+            boolean nameTaken = false;
+            for (TabPlayer all : HavocTab.getInstance().getOnlinePlayers()) {
+                if (all == p) continue;
+                if (potentialTeamName.equals(all.sortingData.shortTeamName)) {
+                    nameTaken = true;
+                    break;
+                }
+            }
+            if (!nameTaken && proxy != null && nameTags != null) {
+                for (ProxyPlayer all : proxy.getProxyPlayers().values()) {
+                    if (all.getNametag() != null && potentialTeamName.equals(all.getNametag().getResolvedTeamName())) {
+                        nameTaken = true;
+                        break;
+                    }
+                }
+            }
+            if (!nameTaken) {
+                return potentialTeamName;
+            }
+            id++;
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getFeatureName() {
+        return "Sorting";
+    }
+
+    @Override
+    @NotNull
+    public Object dump(@NotNull TabPlayer player) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("configuration", configuration.getSection().getMap());
+        map.put("short-team-name", player.sortingData.shortTeamName.replaceAll("\\p{C}", ""));
+        map.put("full-team-name", player.sortingData.fullTeamName.replaceAll("\\p{C}", ""));
+        map.put("forced-team-name", player.sortingData.forcedTeamName);
+
+        List<List<String>> sortedPlayersTable = new ArrayList<>();
+        List<String> header = new ArrayList<>();
+        header.add("Player");
+        for (SortingType type : usedSortingTypes) {
+            header.add(type.getDisplayName());
+        }
+        Map<String, TabPlayer> players = new HashMap<>();
+        for (TabPlayer p : HavocTab.getInstance().getOnlinePlayers()) {
+            players.put(p.sortingData.shortTeamName, p);
+        }
+
+        Map<String, TabPlayer> sorted = new TreeMap<>(players);
+        for (TabPlayer p : sorted.values()) {
+            List<String> row = new ArrayList<>();
+            row.add(p.getName());
+            for (SortingType type : usedSortingTypes) {
+                row.add(type.getReturnedValue(p));
+            }
+            sortedPlayersTable.add(row);
+        }
+
+        map.put("players in the order they appear in tablist along with returned values of sorting types", DumpUtils.tableToLines(header, sortedPlayersTable));
+
+        return map;
+    }
+
+    // ------------------
+    // API Implementation
+    // ------------------
+
+    @Override
+    public void forceTeamName(@NonNull dev.havoc.havoctab.api.TabPlayer player, String name) {
+        ensureActive();
+        TabPlayer p = (TabPlayer) player;
+        p.ensureLoaded();
+        if (Objects.equals(p.sortingData.forcedTeamName, name)) return;
+        if (name != null) {
+            if (name.length() > Limitations.TEAM_NAME_LENGTH) throw new IllegalArgumentException("Team name cannot be more than 16 characters long.");
+        }
+        p.sortingData.forcedTeamName = name;
+        if (layout != null) layout.updateTeamName(p, p.sortingData.getFullTeamName());
+        if (nameTags != null) nameTags.updateTeamName(p, p.sortingData.getShortTeamName());
+    }
+
+    @Override
+    @Nullable
+    public String getForcedTeamName(@NonNull dev.havoc.havoctab.api.TabPlayer player) {
+        ensureActive();
+        return ((TabPlayer)player).sortingData.forcedTeamName;
+    }
+
+    @Override
+    @NotNull
+    public String getOriginalTeamName(@NonNull dev.havoc.havoctab.api.TabPlayer player) {
+        ensureActive();
+        ((TabPlayer)player).ensureLoaded();
+        return ((TabPlayer)player).sortingData.shortTeamName;
+    }
+}

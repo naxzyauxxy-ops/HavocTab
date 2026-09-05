@@ -1,0 +1,112 @@
+main: dev.havoc.havoctab.platforms.bukkit.BukkitHavocTab
+name: @name@
+version: @version@
+description: @description@
+api-version: 1.13 # Defining to avoid legacy plugin warn
+load: POSTWORLD
+author: @author@
+website: "@website@"
+softdepend: [PlaceholderAPI, LuckPerms, LibsDisguises, ViaVersion, ViaRewind, floodgate, Vault]
+prefix: HavocTab
+folia-supported: true
+commands:
+  havoctab:
+    description: Plugin's main command
+    aliases: [htab, tab]
+permissions:
+  havoctab.admin:
+    description: Grants all HavocTab permissions
+    default: op
+  havoctab.tabcomplete:
+    description: Allows player to complete all HavocTab commands
+    default: op
+  havoctab.reload:
+    description: Allows player to run /havoctab reload
+    default: op
+  havoctab.cpu:
+    description: Allows player to run /havoctab cpu
+    default: op
+  havoctab.dump:
+    description: Allows player to run /havoctab dump <player>
+    default: op
+  havoctab.groupinfo:
+    description: Allows player to run /havoctab group <group>
+    default: op
+  havoctab.grouplist:
+    description: Allows player to run /havoctab groups
+    default: op
+  havoctab.parse:
+    description: Allows player to run /havoctab parse <player> <placeholder>
+    default: op
+  havoctab.setcollision:
+    description: Allows player to run /havoctab setcollision <player> <true/false>
+    default: op
+  havoctab.remove:
+    description: Allows player to remove group/user using commands
+    default: op
+  havoctab.change.*:
+    description: Allows player to change property using command
+    default: op
+  havoctab.announce.bar:
+    description: Allows player to run /havoctab bossbar announce
+    default: op
+  havoctab.bossbar.toggle:
+    description: Allows player to run /havoctab bossbar
+    default: op
+  havoctab.send.bar:
+    description: Allows player to run /havoctab bossbar send
+    default: op
+  havoctab.mysql.download:
+    description: Allows player to run /havoctab mysql download
+    default: op
+  havoctab.mysql.upload:
+    description: Allows player to run /havoctab mysql upload
+    default: op
+  havoctab.nametag.toggle:
+    description: Allows player to run /havoctab nametag toggle
+    default: op
+  havoctab.nametag.toggle.other:
+    description: Allows player to run /havoctab nametag toggle [other player]
+    default: op
+  havoctab.announce.scoreboard:
+    description: Allows player to run /havoctab scoreboard announce
+    default: op
+  havoctab.scoreboard.toggle:
+    description: Allows player to run /havoctab scoreboard
+    default: op
+  havoctab.scoreboard.toggle.other:
+    description: Allows player to run /havoctab scoreboard for other players
+    default: op
+  havoctab.scoreboard.show:
+    description: Allows player to run /havoctab scoreboard show
+    default: op
+  havoctab.scoreboard.show.other:
+    description: Allows player to run /havoctab scoreboard show for other players
+    default: op
+  havoctab.ranks.toggle:
+    description: Allows player to run /ranks (client-side rank visibility toggle)
+    default: true
+  havoctab.belowname.toggle:
+    description: Allows player to run /belowname (client-side belowname visibility toggle)
+    default: true
+  havoctab.chat.toggle:
+    description: Allows player to run /publicchat and /chatformat
+    default: true
+  havoctab.chat.block:
+    description: Allows player to run /block, /ignore and /blocklist
+    default: true
+  havoctab.staff:
+    description: Makes player counted in %staffonline% placeholder
+    default: op
+  havoctab.group.*:
+    description: Considers player in group if assigning by permissions
+    default: op
+  havoctab.bypass:
+    description: Makes player bypass per world playerlist if bypass permission is enabled
+    default: op
+  havoctab.seevanished:
+    description: Marks player as able to see vanished players for features hooking into vanish plugins
+    default: op
+  havoctab.spectatorbypass:
+    description: Makes player bypass spectator fix
+    default: op

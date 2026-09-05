@@ -1,0 +1,507 @@
+package dev.havoc.havoctab.platforms.bukkit.platform;
+
+import lombok.Getter;
+import lombok.SneakyThrows;
+import me.clip.placeholderapi.PlaceholderAPI;
+import me.clip.placeholderapi.PlaceholderAPIPlugin;
+import me.clip.placeholderapi.expansion.PlaceholderExpansion;
+import dev.havoc.havoctab.platforms.bukkit.*;
+import dev.havoc.havoctab.platforms.bukkit.bossbar.BukkitBossBar;
+import dev.havoc.havoctab.platforms.bukkit.bossbar.ViaBossBar;
+import dev.havoc.havoctab.platforms.bukkit.features.BukkitTabExpansion;
+import dev.havoc.havoctab.platforms.bukkit.features.PerWorldPlayerList;
+import dev.havoc.havoctab.platforms.bukkit.hook.BukkitPremiumVanishHook;
+import dev.havoc.havoctab.shared.*;
+import dev.havoc.havoctab.shared.backend.BackendPlatform;
+import dev.havoc.havoctab.platforms.bukkit.chat.BukkitBlockListMenu;
+import dev.havoc.havoctab.shared.chat.TabTextColor;
+import dev.havoc.havoctab.shared.features.chat.ChatManager;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import dev.havoc.havoctab.shared.chat.component.TabKeybindComponent;
+import dev.havoc.havoctab.shared.chat.component.TabTextComponent;
+import dev.havoc.havoctab.shared.chat.component.TabTranslatableComponent;
+import dev.havoc.havoctab.shared.chat.component.object.TabObjectComponent;
+import dev.havoc.havoctab.shared.features.PerWorldPlayerListConfiguration;
+import dev.havoc.havoctab.shared.features.PlaceholderManagerImpl;
+import dev.havoc.havoctab.shared.features.injection.PipelineInjector;
+import dev.havoc.havoctab.shared.features.types.TabFeature;
+import dev.havoc.havoctab.shared.hook.LuckPermsHook;
+import dev.havoc.havoctab.shared.placeholders.expansion.EmptyTabExpansion;
+import dev.havoc.havoctab.shared.placeholders.expansion.TabExpansion;
+import dev.havoc.havoctab.shared.placeholders.types.PlayerPlaceholderImpl;
+import dev.havoc.havoctab.shared.platform.BossBar;
+import dev.havoc.havoctab.shared.platform.Scoreboard;
+import dev.havoc.havoctab.shared.platform.TabList;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import dev.havoc.havoctab.shared.platform.impl.AdventureBossBar;
+import dev.havoc.havoctab.shared.platform.impl.DummyBossBar;
+import dev.havoc.havoctab.shared.util.ReflectionUtils;
+import net.kyori.adventure.audience.Audience;
+import net.milkbowl.vault.chat.Chat;
+import net.milkbowl.vault.permission.Permission;
+import org.bstats.bukkit.Metrics;
+import org.bstats.charts.SimplePie;
+import org.bukkit.Bukkit;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.PluginCommand;
+import org.bukkit.command.SimpleCommandMap;
+import org.bukkit.command.defaults.BukkitCommand;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.RegisteredServiceProvider;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.io.File;
+import java.util.*;
+import java.util.function.BiConsumer;
+
+/**
+ * Implementation of Platform interface for Bukkit platform
+ */
+@Getter
+public class BukkitPlatform implements BackendPlatform {
+
+    /** Plugin instance for registering tasks and events */
+    @NotNull
+    private final JavaPlugin plugin;
+
+    /** Information about server version */
+    @NotNull
+    private final ServerVersionInfo serverVersionInfo = new ServerVersionInfo();
+
+    /** Variables checking presence of other plugins to hook into */
+    private final boolean placeholderAPI = Bukkit.getPluginManager().isPluginEnabled("PlaceholderAPI");
+
+    /** Spigot field for tracking TPS, the array is final and only being modified instead of re-instantiated */
+    private double[] recentTps;
+
+    /** Detection for presence of Paper's TPS getter */
+    private final boolean paperTps = ReflectionUtils.methodExists(Bukkit.class, "getTPS");
+
+    /** Detection for presence of Paper's MSPT getter */
+    private final boolean paperMspt = ReflectionUtils.methodExists(Bukkit.class, "getAverageTickTime");
+
+    private final boolean modernOnlinePlayers;
+
+    /** Command map for dynamic command registering */
+    private final SimpleCommandMap commandMap;
+    private final Map<String, Command> knownCommands;
+
+    /** List of custom commands registered to be able to unregister them on reload */
+    private final List<Command> customCommands = new ArrayList<>();
+
+    /**
+     * Constructs new instance with given plugin.
+     *
+     * @param   plugin
+     *          Plugin
+     */
+    @SneakyThrows
+    @SuppressWarnings("unchecked")
+    public BukkitPlatform(@NotNull JavaPlugin plugin) {
+        this.plugin = plugin;
+        modernOnlinePlayers = Bukkit.class.getMethod("getOnlinePlayers").getReturnType() == Collection.class;
+        logInfo(new TabTextComponent("Found NMS implementation: " + serverVersionInfo.getImplementationProvider().getClass().getName(), TabTextColor.GRAY));
+        try {
+            Object server = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
+            recentTps = ((double[]) server.getClass().getField("recentTps").get(server));
+        } catch (ReflectiveOperationException ignored) {
+            //not spigot
+        }
+        if (Bukkit.getPluginManager().isPluginEnabled("PremiumVanish")) {
+            new BukkitPremiumVanishHook().register();
+        }
+        commandMap = (SimpleCommandMap) Bukkit.getServer().getClass().getMethod("getCommandMap").invoke(Bukkit.getServer());
+        knownCommands = (Map<String, Command>) ReflectionUtils.getField(SimpleCommandMap.class, "knownCommands").get(commandMap);
+    }
+
+    @Override
+    public void loadPlayers() {
+        for (Player p : getOnlinePlayers()) {
+            HavocTab.getInstance().addPlayer(new BukkitTabPlayer(this, p));
+        }
+    }
+
+    @Override
+    public void registerPlaceholders() {
+        PlaceholderManagerImpl manager = HavocTab.getInstance().getPlaceholderManager();
+        manager.registerServerPlaceholder("%vault-prefix%", -1, () -> "");
+        manager.registerServerPlaceholder("%vault-suffix%", -1, () -> "");
+        if (Bukkit.getPluginManager().isPluginEnabled("Vault")) {
+            RegisteredServiceProvider<Chat> rspChat = Bukkit.getServicesManager().getRegistration(Chat.class);
+            if (rspChat != null) {
+                Chat chat = rspChat.getProvider();
+                manager.registerPlayerPlaceholder("%vault-prefix%", p -> chat.getPlayerPrefix((Player) p.getPlayer()));
+                manager.registerPlayerPlaceholder("%vault-suffix%", p -> chat.getPlayerSuffix((Player) p.getPlayer()));
+            }
+        }
+        BackendPlatform.super.registerPlaceholders();
+    }
+
+    @Override
+    @Nullable
+    public PipelineInjector createPipelineInjector() {
+        return serverVersionInfo.getServerVersion().getNetworkId() >= ProtocolVersion.V1_8.getNetworkId()
+                ? new BukkitPipelineInjector() : null;
+    }
+
+    @Override
+    @NotNull
+    public TabExpansion createTabExpansion() {
+        if (placeholderAPI) {
+            BukkitTabExpansion expansion = new BukkitTabExpansion();
+            expansion.register();
+            return expansion;
+        }
+        return new EmptyTabExpansion();
+    }
+
+    @Override
+    @Nullable
+    public TabFeature getPerWorldPlayerList(@NotNull PerWorldPlayerListConfiguration configuration) {
+        return new PerWorldPlayerList(plugin, this, configuration);
+    }
+
+    @Override
+    public void registerUnknownPlaceholder(@NotNull String identifier) {
+        if (!placeholderAPI) {
+            registerDummyPlaceholder(identifier);
+            return;
+        }
+        if (identifier.startsWith("%rel_")) {
+            //relational placeholder
+            HavocTab.getInstance().getPlaceholderManager().registerRelationalPlaceholder(identifier, (viewer, target) ->
+                    PlaceholderAPI.setRelationalPlaceholders((Player) viewer.getPlayer(), (Player) target.getPlayer(), identifier));
+        } else if (identifier.startsWith("%sync:")) {
+            registerSyncPlaceholder(identifier);
+        } else if (identifier.startsWith("%server_")) {
+            HavocTab.getInstance().getPlaceholderManager().registerServerPlaceholder(identifier,
+                    () -> PlaceholderAPI.setPlaceholders(null, identifier));
+        } else {
+            HavocTab.getInstance().getPlaceholderManager().registerPlayerPlaceholder(identifier,
+                    p -> PlaceholderAPI.setPlaceholders((Player) p.getPlayer(), identifier));
+        }
+    }
+
+    /**
+     * Registers a sync placeholder with given identifier and automatically decided refresh.
+     *
+     * @param   identifier
+     *          Placeholder identifier
+     */
+    public void registerSyncPlaceholder(@NotNull String identifier) {
+        String syncedPlaceholder = "%" + identifier.substring(6);
+        PlayerPlaceholderImpl[] ppl = new PlayerPlaceholderImpl[1];
+        ppl[0] = HavocTab.getInstance().getPlaceholderManager().registerPlayerPlaceholder(identifier, p -> {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                long time = System.nanoTime();
+                ppl[0].updateValue(p, placeholderAPI ? PlaceholderAPI.setPlaceholders((Player) p.getPlayer(), syncedPlaceholder) : identifier);
+                long totalTime =  System.nanoTime()-time;
+                HavocTab.getInstance().getCPUManager().addPlaceholderTime(identifier, totalTime);
+                HavocTab.getInstance().getCpu().addTime(HavocTab.getInstance().getPlaceholderManager().getFeatureName(), TabConstants.CpuUsageCategory.PLACEHOLDER_REQUEST, totalTime);
+            });
+            return null;
+        });
+    }
+
+    @Override
+    public void logInfo(@NotNull TabComponent message) {
+        Bukkit.getConsoleSender().sendMessage("[HavocTab] " + toBukkitFormat(message));
+    }
+
+    @Override
+    public void logWarn(@NotNull TabComponent message) {
+        Bukkit.getConsoleSender().sendMessage("§c[HavocTab] [WARN] " + toBukkitFormat(message));
+    }
+
+    @Override
+    public void registerListener() {
+        Bukkit.getPluginManager().registerEvents(new BukkitEventListener(this), plugin);
+
+        // Block list menu. Works on every Bukkit version and is what Bedrock players get,
+        // since Geyser translates container UIs but not Java-edition dialogs.
+        BukkitBlockListMenu blockListMenu = new BukkitBlockListMenu();
+        Bukkit.getPluginManager().registerEvents(blockListMenu, plugin);
+        ChatManager.setBlockListView(blockListMenu);
+
+        registerPaperChat();
+    }
+
+    /**
+     * Loads HavocTab's Paper-only chat and dialog support if the server has the required
+     * classes. On Spigot and older Paper builds this silently does nothing, and the chat
+     * feature's commands still work - only the per-viewer formatting and the native
+     * block list dialog are unavailable.
+     */
+    private void registerPaperChat() {
+        if (!ReflectionUtils.classExists("io.papermc.paper.event.player.AsyncChatEvent")) return;
+        try {
+            Class.forName("dev.havoc.havoctab.platforms.bukkit.paperchat.PaperChatHook")
+                    .getConstructor(JavaPlugin.class)
+                    .newInstance(plugin);
+        } catch (Throwable t) {
+            logWarn(new TabTextComponent("Failed to enable Paper chat support: " + t, TabTextColor.RED));
+        }
+    }
+
+    @Override
+    public void registerCommand() {
+        PluginCommand command = Bukkit.getPluginCommand(getCommand());
+        if (command != null) {
+            BukkitTabCommand cmd = new BukkitTabCommand();
+            command.setExecutor(cmd);
+            command.setTabCompleter(cmd);
+        } else {
+            logWarn(new TabTextComponent("Failed to register command, is it defined in plugin.yml?", TabTextColor.RED));
+        }
+    }
+
+    @Override
+    public void startMetrics() {
+        Metrics metrics = new Metrics(plugin, TabConstants.BSTATS_PLUGIN_ID_BUKKIT);
+        metrics.addCustomChart(new SimplePie(TabConstants.MetricsChart.PERMISSION_SYSTEM,
+                () -> HavocTab.getInstance().getGroupManager().getPermissionPlugin()));
+        metrics.addCustomChart(new SimplePie("tab_6_1_0_servers",
+                () -> serverVersionInfo.getServerName() + " " + serverVersionInfo.getServerVersion().getFriendlyName()));
+        metrics.addCustomChart(new SimplePie("tab_6_1_0_package", serverVersionInfo::getImplementationPackage));
+    }
+
+    @Override
+    @NotNull
+    public File getDataFolder() {
+        return plugin.getDataFolder();
+    }
+
+    @Override
+    @NotNull
+    public Object convertComponent(@NotNull TabComponent component) {
+        return serverVersionInfo.getImplementationProvider().getComponentConverter().convert(component);
+    }
+
+    @Override
+    @NotNull
+    public Scoreboard createScoreboard(@NotNull TabPlayer player) {
+        return serverVersionInfo.getImplementationProvider().newScoreboard((BukkitTabPlayer) player);
+    }
+
+    @Override
+    @NotNull
+    public BossBar createBossBar(@NotNull TabPlayer player) {
+        //noinspection ConstantValue
+        if (AdventureBossBar.isAvailable() && Audience.class.isAssignableFrom(Player.class)) return new AdventureBossBar(player);
+
+        // 1.9+ server, handle using API, potential 1.8 players are handled by ViaVersion
+        if (BukkitBossBar.isAvailable()) return new BukkitBossBar((BukkitTabPlayer) player);
+
+        // 1.9+ player on 1.8 server, handle using ViaVersion API
+        if (player.getVersion().getNetworkId() >= ProtocolVersion.V1_9.getNetworkId()) return new ViaBossBar((BukkitTabPlayer) player);
+
+        // 1.8- server and player, no implementation
+        return new DummyBossBar();
+    }
+
+    @Override
+    @NotNull
+    public TabList createTabList(@NotNull TabPlayer player) {
+        return serverVersionInfo.getImplementationProvider().newTabList((BukkitTabPlayer) player);
+    }
+
+    @Override
+    public boolean supportsScoreboards() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsListed() {
+        return serverVersionInfo.getServerVersion().getNetworkId() >= ProtocolVersion.V1_19_3.getNetworkId();
+    }
+
+    @Override
+    public boolean supportsListOrder() {
+        return serverVersionInfo.getServerVersion().getNetworkId() >= ProtocolVersion.V1_21_2.getNetworkId();
+    }
+
+    @Override
+    public boolean isSafeFromPacketEventsBug() {
+        return serverVersionInfo.getServerVersion().getMinorVersion() >= 13;
+    }
+
+    @Override
+    public void registerCustomCommand(@NotNull String commandName, @NotNull BiConsumer<TabPlayer, String[]> function) {
+        Command cmd = new BukkitCommand(commandName) {
+
+            @Override
+            public boolean execute(@NotNull CommandSender commandSender, @NotNull String alias, @NotNull String[] args) {
+                if (commandSender instanceof Player) {
+                    TabPlayer p = HavocTab.getInstance().getPlayer(((Player) commandSender).getUniqueId());
+                    if (p == null) return false; //player not loaded correctly
+                    function.accept(p, args);
+                } else {
+                    commandSender.sendMessage(toBukkitFormat(
+                            TabComponent.fromColoredText(HavocTab.getInstance().getConfiguration().getMessages().getCommandOnlyFromGame())
+                    ));
+                }
+                return false;
+            }
+        };
+        commandMap.register(commandName, cmd);
+        customCommands.add(cmd);
+    }
+
+    @Override
+    public void unregisterAllCustomCommands() {
+        for (Command command : customCommands) {
+            knownCommands.remove(command.getName());
+            knownCommands.remove(command.getName() + ":" + command.getName());
+            command.unregister(commandMap);
+        }
+        customCommands.clear();
+    }
+
+    @Override
+    @NotNull
+    public GroupManager detectPermissionPlugin() {
+        if (LuckPermsHook.getInstance().isInstalled()) {
+            return new GroupManager("LuckPerms", LuckPermsHook.getInstance().getGroupFunction());
+        }
+        if (Bukkit.getPluginManager().isPluginEnabled("Vault")) {
+            RegisteredServiceProvider<Permission> provider = Bukkit.getServicesManager().getRegistration(Permission.class);
+            if (provider != null && !provider.getProvider().getName().equals("SuperPerms")) {
+                return new GroupManager(provider.getProvider().getName(), p -> provider.getProvider().getPrimaryGroup((Player) p.getPlayer()));
+            }
+        }
+        return new GroupManager("None", p -> TabConstants.NO_GROUP);
+    }
+
+    @Override
+    public double getTPS() {
+        if (recentTps != null) {
+            return recentTps[0];
+        } else if (paperTps) {
+            return Bukkit.getTPS()[0];
+        } else {
+            return -1;
+        }
+    }
+
+    @Override
+    public double getMSPT() {
+        if (paperMspt) return Bukkit.getAverageTickTime();
+        return -1;
+    }
+
+    /**
+     * Runs task in the main thread for given entity.
+     *
+     * @param   entity
+     *          Entity to run the task for
+     * @param   task
+     *          Task to run
+     */
+    public void runSync(@NotNull Entity entity, @NotNull Runnable task) {
+        Bukkit.getScheduler().runTask(plugin, task);
+    }
+
+    /**
+     * Runs task in the global tick thread.
+     *
+     * @param   task
+     *          Task to run
+     */
+    public void runSyncGlobal(@NotNull Runnable task) {
+        Bukkit.getScheduler().runTask(plugin, task);
+    }
+
+    @Override
+    public boolean hasLineOfSight(@NotNull TabPlayer viewer, @NotNull TabPlayer target) {
+        return ((Player) viewer.getPlayer()).hasLineOfSight((Player) target.getPlayer());
+    }
+
+    /**
+     * Converts component to string using bukkit RGB format if supported by the server.
+     * If not, closest legacy color is used instead.
+     *
+     * @param   component
+     *          Component to convert
+     * @return  Converted string using bukkit color format
+     */
+    @NotNull
+    public String toBukkitFormat(@NotNull TabComponent component) {
+        StringBuilder sb = new StringBuilder();
+        if (component.getModifier().getColor() != null) {
+            if (serverVersionInfo.getServerVersion().getNetworkId() >= ProtocolVersion.V1_16.getNetworkId()) {
+                String hexCode = component.getModifier().getColor().getHexCode();
+                sb.append('§').append("x").append('§').append(hexCode.charAt(0)).append('§').append(hexCode.charAt(1))
+                        .append('§').append(hexCode.charAt(2)).append('§').append(hexCode.charAt(3))
+                        .append('§').append(hexCode.charAt(4)).append('§').append(hexCode.charAt(5));
+            } else {
+                sb.append('§').append(component.getModifier().getColor().getLegacyColor().getCharacter());
+            }
+        }
+        sb.append(component.getModifier().getMagicCodes());
+        if (component instanceof TabTextComponent) {
+            sb.append(((TabTextComponent) component).getText());
+        } else if (component instanceof TabTranslatableComponent) {
+            sb.append(((TabTranslatableComponent) component).getKey());
+        } else if (component instanceof TabKeybindComponent) {
+            sb.append(((TabKeybindComponent) component).getKeybind());
+        } else if (component instanceof TabObjectComponent) {
+            sb.append(component.toLegacyText());
+        } else {
+            throw new IllegalStateException("Unexpected component type: " + component.getClass().getName());
+        }
+        for (TabComponent extra : component.getExtra()) {
+            sb.append(toBukkitFormat(extra));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Returns online players from Bukkit API.
+     * This method may use reflections, because the return type changed in 1.7.10,
+     * and we want to avoid errors.
+     *
+     * @return  Online players from Bukkit API.
+     */
+    @SneakyThrows
+    @NotNull
+    public Collection<? extends Player> getOnlinePlayers() {
+        if (modernOnlinePlayers) {
+            return Bukkit.getOnlinePlayers();
+        }
+        return Arrays.asList((Player[]) Bukkit.class.getMethod("getOnlinePlayers").invoke(null));
+    }
+
+    @Override
+    @NotNull
+    public Object dump() {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("server-type", "Bukkit");
+        map.put("server-name", Bukkit.getName());
+        map.put("server-version", serverVersionInfo.getMinecraftVersion());
+        map.put("craftbukkit-package", serverVersionInfo.getServerPackage());
+        map.put("nms-implementation", serverVersionInfo.getImplementationProvider().getClass().getName());
+        map.put("tab-version", ProjectVariables.PLUGIN_VERSION);
+        Map<String, Object> plugins = new LinkedHashMap<>();
+        Plugin[] pluginArray = Bukkit.getPluginManager().getPlugins();
+        Arrays.sort(pluginArray, Comparator.comparing(p -> p.getDescription().getName(), String.CASE_INSENSITIVE_ORDER));
+        for (Plugin p : pluginArray) {
+            plugins.put(p.getDescription().getName(), p.getDescription().getVersion());
+        }
+        map.put("plugins", plugins);
+        if (placeholderAPI) {
+            Map<String, String> expansions = new LinkedHashMap<>();
+            PlaceholderExpansion[] expansionArray = PlaceholderAPIPlugin.getInstance().getLocalExpansionManager().getExpansions().toArray(new PlaceholderExpansion[0]);
+            Arrays.sort(expansionArray, Comparator.comparing(PlaceholderExpansion::getIdentifier, String.CASE_INSENSITIVE_ORDER));
+            for (PlaceholderExpansion p : expansionArray) {
+                expansions.put(p.getIdentifier(), p.getVersion());
+            }
+            map.put("placeholderapi-expansions", expansions);
+        }
+        return map;
+    }
+}

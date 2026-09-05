@@ -1,0 +1,7 @@
+name: @name@
+main: dev.havoc.havoctab.platforms.bungeecord.BungeeHavocTab
+version: @version@
+author: @author@
+description: @description@
+depends: []
+softDepends: [RedisBungee, LuckPerms, PremiumVanish]

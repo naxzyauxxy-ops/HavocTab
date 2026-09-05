@@ -1,0 +1,24 @@
+HavocTab
+Copyright 2026 NaxzyAuxxy
+
+This product is a derivative work of TAB.
+
+  TAB
+  Copyright NEZNAMY and contributors
+  https://github.com/NEZNAMY/TAB
+  Licensed under the Apache License, Version 2.0
+
+HavocTab is distributed under the same Apache License, Version 2.0.
+A copy of the license is included in the LICENSE file at the root of this
+repository, and may also be obtained at:
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Changes made relative to upstream TAB 6.1.2:
+  - Renamed the project, plugin id, command, permission nodes and Java
+    packages (me.neznamy.tab -> dev.havoc.havoctab).
+  - Disabled bStats metrics so this fork does not report data under the
+    upstream project's bStats plugin IDs.
+  - Added client-side (per-viewer) rank visibility toggle.
+  - Added client-side (per-viewer) belowname visibility toggle.
+  - Added %havoctab_ranks% / %havoctab_belowname% status placeholders.
