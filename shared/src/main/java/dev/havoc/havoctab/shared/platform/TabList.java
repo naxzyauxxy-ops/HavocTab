@@ -1,0 +1,291 @@
+package dev.havoc.havoctab.shared.platform;
+
+import lombok.*;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.UUID;
+
+/**
+ * Interface for managing tablist entries.
+ */
+public interface TabList {
+
+    /** Name of the textures property in game profile */
+    String TEXTURES_PROPERTY = "textures";
+
+    /**
+     * Removes entry from the TabList.
+     *
+     * @param   entry
+     *          Entry to remove
+     */
+    void removeEntry(@NonNull UUID entry);
+
+    /**
+     * Updates display name of an entry. Using {@code null} makes it undefined and
+     * scoreboard team prefix/suffix will be visible instead.
+     *
+     * @param   entry
+     *          Entry to update
+     * @param   displayName
+     *          New display name
+     */
+    void updateDisplayName(@NonNull UUID entry, @Nullable TabComponent displayName);
+
+    /**
+     * Updates display name of specified player. Using {@code null} makes it undefined and
+     * scoreboard team prefix/suffix will be visible instead. If the viewer cannot see the player,
+     * the action will not be sent to the client.
+     *
+     * @param   player
+     *          Player to safely update display name of
+     * @param   displayName
+     *          New display name
+     */
+    void updateDisplayName(@NonNull TabPlayer player, @Nullable TabComponent displayName);
+
+    /**
+     * Updates latency of specified entry.
+     *
+     * @param   entry
+     *          Entry to update
+     * @param   latency
+     *          New latency
+     */
+    void updateLatency(@NonNull UUID entry, int latency);
+
+    /**
+     * Updates latency of specified player. If the viewer cannot see the player,
+     * the action will not be sent to the client.
+     *
+     * @param   player
+     *          Player to safely update latency of
+     * @param   latency
+     *          New latency
+     */
+    void updateLatency(@NonNull TabPlayer player, int latency);
+
+    /**
+     * Updates game mode of specified entry.
+     *
+     * @param   entry
+     *          Entry to update
+     * @param   gameMode
+     *          New game mode
+     */
+    void updateGameMode(@NonNull UUID entry, int gameMode);
+
+    /**
+     * Updates game mode of specified player. If the viewer cannot see the player,
+     * the action will not be sent to the client.
+     *
+     * @param   player
+     *          Player to safely update gamemode of
+     * @param   gameMode
+     *          New game mode
+     */
+    void updateGameMode(@NonNull TabPlayer player, int gameMode);
+
+    /**
+     * Updates listed flag of specified entry (1.19.3+).
+     *
+     * @param   entry
+     *          Entry to update
+     * @param   listed
+     *          New listed flag
+     */
+    void updateListed(@NonNull UUID entry, boolean listed);
+
+    /**
+     * Updates listed flag of specified player (1.19.3+). If the viewer cannot see the player,
+     * the action will not be sent to the client.
+     *
+     * @param   player
+     *          Player to safely update listed flag of
+     * @param   listed
+     *          New listed flag
+     */
+    void updateListed(@NonNull TabPlayer player, boolean listed);
+
+    /**
+     * Updates list order of specified entry (1.21.2+).
+     *
+     * @param   entry
+     *          Entry to update
+     * @param   listOrder
+     *          New list order
+     */
+    void updateListOrder(@NonNull UUID entry, int listOrder);
+
+    /**
+     * Updates show hat flag of specified entry (1.21.4+).
+     *
+     * @param   entry
+     *          Entry to update
+     * @param   showHat
+     *          New show hat flag value
+     */
+    void updateHat(@NonNull UUID entry, boolean showHat);
+
+    /**
+     * Adds specified entry into the TabList.
+     *
+     * @param   entry
+     *          Entry to add
+     */
+    void addEntry(@NonNull Entry entry);
+
+    /**
+     * Sets header and footer to specified values.
+     *
+     * @param   header
+     *          Header to use
+     * @param   footer
+     *          Footer to use
+     */
+    void setPlayerListHeaderFooter(@Nullable TabComponent header, @Nullable TabComponent footer);
+
+    /**
+     * Returns player's skin data
+     *
+     * @return  player's skin
+     */
+    @Nullable
+    Skin getSkin();
+
+    /**
+     * Blocks the player from being displayed as spectator. This means sending packet
+     * to update their gamemode to something else (survival) and marking the player,
+     * changing gamemode in all outgoing packets.
+     *
+     * @param   player
+     *          Player to prevent from being shown as spectator
+     */
+    void blockSpectator(@NonNull TabPlayer player);
+
+    /**
+     * Unblocks the player from being displayed as spectator. This means sending packet
+     * to update their gamemode back to their real gamemode and unmarking the player,
+     * no longer changing gamemode in all outgoing packets.
+     *
+     * @param   player
+     *          Player to allow being shown as spectator
+     */
+    void unblockSpectator(@NonNull TabPlayer player);
+
+    /**
+     * Hides all real players from the tablist and makes sure newly joined players
+     * are hidden as well.
+     */
+    void hideAllPlayers();
+
+    /**
+     * Shows all real players in the tablist again.
+     */
+    void showAllPlayers();
+
+    /**
+     * Returns {@code true} if tablist contains specified entry, {@code false} if not.
+     *
+     * @param   entry
+     *          UUID of entry to check
+     * @return  {@code true} if tablist contains specified entry, {@code false} if not
+     */
+    boolean containsEntry(@NonNull UUID entry);
+
+    /**
+     * Returns collection of all entry UUIDs in this TabList.
+     *
+     * @return  collection of all entry UUIDs in this TabList
+     */
+    @NotNull
+    Collection<UUID> getEntries();
+
+    /**
+     * Dumps tablist information into an object suitable for JSON serialization.
+     *
+     * @return  dumped tablist information
+     */
+    @NotNull
+    Object dump();
+
+    /**
+     * A subclass representing player list entry
+     */
+    @Getter
+    @Setter
+    @AllArgsConstructor
+    class Entry {
+
+        /** Player UUID */
+        @NonNull private UUID uniqueId;
+
+        /** Real name of affected player */
+        @NonNull private String name;
+
+        /** Player's skin, null for empty skin */
+        @Nullable private Skin skin;
+
+        /** Listed flag */
+        private boolean listed;
+
+        /** Latency */
+        private int latency;
+
+        /** GameMode */
+        private int gameMode;
+
+        /**
+         * Display name displayed in TabList. Using {@code null} results in no display name
+         * and scoreboard team prefix/suffix being visible in TabList instead.
+         */
+        @Nullable private TabComponent displayName;
+
+        /** Player list weight */
+        private int listOrder;
+
+        /** Show hat flag */
+        private boolean showHat;
+    }
+
+    /**
+     * Class representing a minecraft skin as a value - signature pair.
+     */
+    @Data
+    @AllArgsConstructor
+    class Skin {
+
+        /** Constant prefix shared by every Minecraft texture URL */
+        private static final String TEXTURE_URL_PREFIX = "https://textures.minecraft.net/texture/";
+
+        /** Skin value */
+        @NonNull
+        private final String value;
+
+        /** Skin signature */
+        @Nullable
+        private final String signature;
+
+        /**
+         * Creates a skin with custom textures using a texture hash.
+         * The method expects a single argument: the Minecraft texture hash (the part after "https://textures.minecraft.net/texture/").
+         * Only works in head components, tablist also requires signature, which is not available.
+         *
+         * @param   hash
+         *          Skin hash
+         * @return  Skin with given texture.
+         */
+        @NotNull
+        public static Skin fromTextureHash(@NonNull String hash) {
+            String textureUrl = TEXTURE_URL_PREFIX + hash;
+            String json = String.format("{\"textures\":{\"SKIN\":{\"url\":\"%s\"}}}", textureUrl);
+            String texture = Base64.getEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8));
+            return new Skin(texture, null);
+        }
+    }
+}

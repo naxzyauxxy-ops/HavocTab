@@ -1,0 +1,109 @@
+#####################################################################
+#                       HAVOCTAB - TAGS                             #
+#####################################################################
+# Cosmetic player tags, shown through the %havoctab_tag% placeholder.
+#
+# Ownership is by PERMISSION. A player owns a tag when they have its
+# permission node, which defaults to havoctab.tag.<id>. That means your
+# store, crates and rank packages already grant tags - they just grant
+# the permission.
+#
+# Put the tag somewhere visible by adding %havoctab_tag% to a format,
+# for example in config.yml:
+#   chat.format: "%havoctab_tag% %chatprefix%%player%&7: &f%message%"
+#   or as tabprefix in groups.yml
+#
+# TEXT FORMATTING - all of these work in display, name and lore:
+#   &3 &a &l &n ...      legacy colour and style codes
+#   &#f40d0d             hex colour
+#   <#f40d0d>            MiniMessage hex
+#   <gradient:#ff0000:#00ff00>text</gradient>
+#   <font:minecraft:uniform>text</font>    any font, including your own
+#                                           resource pack fonts
+#   Custom font example with a namespaced pack:
+#     <font:havoc:icons>A</font>
+
+# The one command for everything:
+#   /tags              opens the menu
+#   /tags <id>         equips that tag
+#   /tags clear        takes your tag off
+#   /tags limited      opens the limited tags list
+#   /tags favorites    opens your favorited tags
+#
+# There is deliberately no separate "/tag" - vanilla Minecraft has owned that
+# command since 1.13, so registering it would fight with the server.
+menu-command: "/tags"
+
+# Require players to take their current tag off before putting a different one
+# on. With this off, clicking a second tag swaps straight to it.
+require-unequip-first: true
+
+# Show tag feedback above the hotbar instead of in chat. Tag messages say what a
+# click just did and are irrelevant a moment later, so they do not belong in chat
+# history. Servers older than 1.9 have no action bar and fall back to chat.
+action-bar-messages: true
+
+# WHERE THE TAG SHOWS UP
+#
+# With this on, HavocTab adds the equipped tag to the tab list itself - you do not
+# have to touch groups.yml at all. That matters because per-group values in
+# groups.yml override each other rather than combining, so placing the tag by hand
+# means editing tabsuffix for every single group.
+#
+# If you would rather place it yourself, set tablist to false and put
+# %havoctab_tag% wherever you want it (groups.yml tabprefix/tabsuffix, the chat
+# format in config.yml, a scoreboard line, the header/footer, anywhere).
+#
+# Do not do both at once or the tag will appear twice.
+display:
+  # Add the tag to the player's line in the tab list
+  tablist: true
+  # Add the tag to the name floating above the player's head
+  nametag: false
+  # SUFFIX puts the tag after the name, PREFIX puts it before
+  position: SUFFIX
+
+tags:
+
+  teamdrain:
+    # What actually shows up wherever %havoctab_tag% is used
+    display: "&#f40d0d[&#f40d0d&lTEAM DRAIN&#f40d0d] "
+    # Name on the menu item
+    name: "&#f40d0d[&lTEAM DRAIN&r&#f40d0d]"
+    # Optional extra lines above the status block
+    lore: []
+    material: "NAME_TAG"
+    # Defaults to havoctab.tag.<id> when omitted
+    permission: "havoctab.tag.teamdrain"
+    # Limited tags live in their own sub-menu
+    limited: false
+    # Lower shows first
+    weight: 10
+
+  fruity:
+    display: "&d[&d&lFRUITY&d] "
+    name: "&d[&lFRUITY&r&d]"
+    lore: []
+    material: "NAME_TAG"
+    limited: false
+    weight: 20
+
+  # A limited tag - identical, except it appears in the Limited Tags menu
+  founder:
+    display: "&6[&6&lFOUNDER&6] "
+    name: "&6[&lFOUNDER&r&6]"
+    lore:
+      - "&7Given to the first members of the server."
+    material: "NAME_TAG"
+    limited: true
+    weight: 1
+
+  # Gradient and custom font example
+  havoc:
+    display: "<gradient:#f40d0d:#fb6868><bold>HAVOC</bold></gradient> "
+    name: "<gradient:#f40d0d:#fb6868>HAVOC</gradient>"
+    lore:
+      - "&7Uses a gradient. Swap in <font:...> for a custom font."
+    material: "NETHER_STAR"
+    limited: true
+    weight: 2

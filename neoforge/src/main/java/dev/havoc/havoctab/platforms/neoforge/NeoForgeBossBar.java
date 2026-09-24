@@ -1,0 +1,67 @@
+package dev.havoc.havoctab.platforms.neoforge;
+
+import lombok.RequiredArgsConstructor;
+import dev.havoc.havoctab.api.bossbar.BarColor;
+import dev.havoc.havoctab.api.bossbar.BarStyle;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import dev.havoc.havoctab.shared.platform.decorators.SafeBossBar;
+import net.minecraft.server.level.ServerBossEvent;
+import net.minecraft.world.BossEvent.BossBarColor;
+import net.minecraft.world.BossEvent.BossBarOverlay;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.UUID;
+
+/**
+ * BossBar implementation for NeoForge using packets.
+ */
+@RequiredArgsConstructor
+public class NeoForgeBossBar extends SafeBossBar<ServerBossEvent> {
+
+    /** Player this BossBar belongs to */
+    @NotNull
+    private final NeoForgeTabPlayer player;
+
+    @Override
+    @NotNull
+    public ServerBossEvent constructBossBar(@NotNull UUID id, @NotNull TabComponent title, float progress, @NotNull BarColor color, @NotNull BarStyle style) {
+        ServerBossEvent bar = new ServerBossEvent(
+                id,
+                title.convert(),
+                BossBarColor.valueOf(color.name()),
+                BossBarOverlay.valueOf(style.name())
+        );
+        bar.setProgress(progress);
+        return bar;
+    }
+
+    @Override
+    public void show(@NotNull BossBarInfo bar) {
+        bar.getBossBar().addPlayer(player.getPlayer());
+    }
+
+    @Override
+    public void updateTitle(@NotNull BossBarInfo bar) {
+        bar.getBossBar().setName(bar.getTitle().convert());
+    }
+
+    @Override
+    public void updateProgress(@NotNull BossBarInfo bar) {
+        bar.getBossBar().setProgress(bar.getProgress());
+    }
+
+    @Override
+    public void updateStyle(@NotNull BossBarInfo bar) {
+        bar.getBossBar().setOverlay(BossBarOverlay.valueOf(bar.getStyle().name()));
+    }
+
+    @Override
+    public void updateColor(@NotNull BossBarInfo bar) {
+        bar.getBossBar().setColor(BossBarColor.valueOf(bar.getColor().name()));
+    }
+
+    @Override
+    public void hide(@NotNull BossBarInfo bar) {
+        bar.getBossBar().removePlayer(player.getPlayer());
+    }
+}

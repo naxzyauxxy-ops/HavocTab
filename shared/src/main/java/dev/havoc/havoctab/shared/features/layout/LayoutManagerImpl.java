@@ -1,0 +1,285 @@
+package dev.havoc.havoctab.shared.features.layout;
+
+import lombok.Getter;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import dev.havoc.havoctab.api.tablist.layout.Layout;
+import dev.havoc.havoctab.api.tablist.layout.LayoutManager;
+import dev.havoc.havoctab.shared.Property;
+import dev.havoc.havoctab.shared.ProtocolVersion;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.TabConstants;
+import dev.havoc.havoctab.shared.features.layout.LayoutConfiguration.LayoutDefinition;
+import dev.havoc.havoctab.shared.features.layout.impl.FakeEntryLayout;
+import dev.havoc.havoctab.shared.features.layout.impl.LayoutBase;
+import dev.havoc.havoctab.shared.features.layout.impl.common.FixedSlot;
+import dev.havoc.havoctab.shared.features.layout.pattern.LayoutPattern;
+import dev.havoc.havoctab.shared.features.pingspoof.PingSpoof;
+import dev.havoc.havoctab.shared.features.playerlist.PlayerList;
+import dev.havoc.havoctab.shared.features.types.*;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.*;
+import java.util.Map.Entry;
+
+@Getter
+public class LayoutManagerImpl extends RefreshableFeature implements LayoutManager, JoinListener, QuitListener, VanishListener, Loadable,
+        UnLoadable, TabListClearListener, Dumpable {
+
+    /** public static for simple access */
+    public static final Set<UUID> UUIDS_SET = new HashSet<>();
+
+    private final LayoutConfiguration configuration;
+    private final LayoutSkinManager skinManager;
+    private final UUID[] uuids = new UUID[80];
+    private final Map<String, LayoutPattern> layouts = new LinkedHashMap<>();
+    private final Map<TabPlayer, String> sortedPlayers = Collections.synchronizedMap(new TreeMap<>(Comparator.comparing(p -> p.layoutData.sortingString)));
+    private PlayerList playerList;
+    private PingSpoof pingSpoof;
+    @Getter private static boolean teamsEnabled;
+
+    /**
+     * Constructs new instance.
+     *
+     * @param   configuration
+     *          Feature configuration
+     */
+    public LayoutManagerImpl(@NotNull LayoutConfiguration configuration) {
+        this.configuration = configuration;
+        skinManager = new LayoutSkinManager(HavocTab.getInstance().getConfiguration().getSkinManager(), configuration.getDefaultSkin(), configuration.getDefaultSkinHashMap());
+        for (int slot=1; slot<=80; slot++) {
+            UUID id = new UUID(1, configuration.getDirection().translateSlot(slot));
+            uuids[slot-1] = id;
+            UUIDS_SET.add(id);
+        }
+        for (Entry<String, LayoutDefinition> entry : configuration.getLayouts().entrySet()) {
+            LayoutPattern pattern = new LayoutPattern(this, entry.getValue());
+            layouts.put(pattern.getName(), pattern);
+            HavocTab.getInstance().getFeatureManager().registerFeature(TabConstants.Feature.layout(entry.getKey()), pattern);
+        }
+    }
+
+    @Override
+    public void load() {
+        playerList = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PLAYER_LIST);
+        pingSpoof = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PING_SPOOF);
+        teamsEnabled = HavocTab.getInstance().getNameTagManager() != null && HavocTab.getInstance().getPlatform().supportsScoreboards();
+        if (pingSpoof == null) HavocTab.getInstance().getFeatureManager().registerFeature(TabConstants.Feature.LAYOUT_LATENCY, new LayoutLatencyRefresher());
+        for (TabPlayer p : HavocTab.getInstance().getOnlinePlayers()) {
+            onJoin(p);
+        }
+    }
+
+    @Override
+    public void onJoin(@NotNull TabPlayer p) {
+        p.layoutData.sortingString = p.sortingData.fullTeamName;
+        sortedPlayers.put(p, p.sortingData.fullTeamName);
+        LayoutPattern highest = getHighestLayout(p);
+        if (highest != null) {
+            sendLayout(p, highest);
+        }
+        for (TabPlayer all : HavocTab.getInstance().getOnlinePlayers()) {
+            if (all.layoutData.currentLayout != null) all.layoutData.currentLayout.view.onJoin(p);
+        }
+
+        // Unformat original entries for players who can see a layout to avoid spaces due to unparsed placeholders and such
+        if (highest == null) return;
+        for (TabPlayer all : HavocTab.getInstance().getOnlinePlayers()) {
+            p.getTabList().updateDisplayName(all, null);
+        }
+    }
+
+    @Override
+    public void onQuit(@NotNull TabPlayer p) {
+        sortedPlayers.remove(p);
+        for (TabPlayer all : HavocTab.getInstance().getOnlinePlayers()) {
+            if (all == p) continue;
+            if (all.layoutData.currentLayout != null) all.layoutData.currentLayout.view.tick();
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getRefreshDisplayName() {
+        return "Switching layouts";
+    }
+
+    @Override
+    public void refresh(@NotNull TabPlayer p, boolean force) {
+        LayoutPattern highest = getHighestLayout(p);
+        LayoutPattern current = p.layoutData.currentLayout == null ? null : p.layoutData.currentLayout.view.getPattern();
+        if (highest != current) {
+            if (current != null) p.layoutData.currentLayout.view.destroy();
+            p.layoutData.currentLayout = null;
+            if (highest != null) {
+                sendLayout(p, highest);
+            }
+        }
+    }
+
+    private void sendLayout(@NotNull TabPlayer player, @NotNull LayoutPattern pattern) {
+        LayoutBase view = new FakeEntryLayout(this, pattern, player);
+        player.layoutData.currentLayout = new LayoutData(view);
+        view.send();
+    }
+
+    @Override
+    public void unload() {
+        for (TabPlayer p : HavocTab.getInstance().getOnlinePlayers()) {
+            if (p.layoutData.currentLayout != null) {
+                p.layoutData.currentLayout.view.destroy();
+            }
+        }
+        UUIDS_SET.clear();
+    }
+
+    @Override
+    public void onVanishStatusChange(@NotNull TabPlayer p) {
+        tickAllLayouts();
+    }
+
+    @Nullable
+    private LayoutPattern getHighestLayout(@NotNull TabPlayer p) {
+        if (p.getVersion().getNetworkId() < ProtocolVersion.V1_8.getNetworkId() || p.isBedrockPlayer()) return null; // Ignore these players entirely
+        if (p.layoutData.forcedLayout != null) return p.layoutData.forcedLayout;
+        for (LayoutPattern pattern : layouts.values()) {
+            if (pattern.isConditionMet(p)) return pattern;
+        }
+        return null;
+    }
+
+    @NotNull
+    public UUID getUUID(int slot) {
+        return uuids[slot-1];
+    }
+
+    public void updateTeamName(@NotNull TabPlayer p, @NotNull String teamName) {
+        sortedPlayers.remove(p);
+        p.layoutData.sortingString = teamName;
+        sortedPlayers.put(p, teamName);
+        tickAllLayouts();
+    }
+
+    @Override
+    public void onTabListClear(@NotNull TabPlayer player) {
+        if (player.layoutData.currentLayout != null) player.layoutData.currentLayout.view.send();
+    }
+
+    /**
+     * Ticks layouts for all players.
+     */
+    public void tickAllLayouts() {
+        for (TabPlayer all : HavocTab.getInstance().getOnlinePlayers()) {
+            if (all.layoutData.currentLayout != null) all.layoutData.currentLayout.view.tick();
+        }
+    }
+
+    // ------------------
+    // API Implementation
+    // ------------------
+
+    @Override
+    @NotNull
+    public Layout createNewLayout(@NonNull String name) {
+        return createNewLayout(name, 80);
+    }
+
+    @Override
+    @NotNull
+    public Layout createNewLayout(@NonNull String name, int slotCount) {
+        ensureActive();
+        return new LayoutPattern(this, new LayoutDefinition(name, null, null, slotCount, Collections.emptyList(), new LinkedHashMap<>()));
+    }
+
+    @Override
+    @Nullable
+    public Layout getLayout(@NonNull String name) {
+        return layouts.get(name);
+    }
+
+    @Override
+    public void sendLayout(@NonNull dev.havoc.havoctab.api.TabPlayer player, @Nullable Layout layout) {
+        ensureActive();
+        TabPlayer p = (TabPlayer) player;
+        p.ensureLoaded();
+        p.layoutData.forcedLayout = (LayoutPattern) layout;
+        refresh(p, false);
+    }
+
+    @Override
+    public void resetLayout(@NonNull dev.havoc.havoctab.api.TabPlayer player) {
+        ensureActive();
+        TabPlayer p = (TabPlayer) player;
+        p.ensureLoaded();
+        p.layoutData.forcedLayout = null;
+        refresh(p, false);
+    }
+
+    @NotNull
+    @Override
+    public String getFeatureName() {
+        return "Layout";
+    }
+
+    @Override
+    @NotNull
+    public Object dump(@NotNull TabPlayer player) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("configuration", configuration.getSection().getMap());
+        map.put("chain", new LinkedHashMap<String, Object>() {{
+            for (LayoutPattern pattern : layouts.values()) {
+               put(pattern.getName(), pattern.dump(player, player.layoutData.currentLayout == null ? null : player.layoutData.currentLayout.view.getPattern()));
+            }
+        }});
+        if (player.layoutData.currentLayout != null) {
+            map.put("currently displayed layout", new LinkedHashMap<String, Object>() {{
+                put("name", player.layoutData.currentLayout.view.getPattern().getName());
+            }});
+        } else {
+            map.put("currently displayed layout", null);
+        }
+        return map;
+    }
+
+    /**
+     * Class storing layout data for players.
+     */
+    public static class PlayerData {
+
+        /** Merged string to sort players by */
+        public String sortingString;
+
+        /** Layout the player can currently see */
+        @Nullable
+        public LayoutData currentLayout;
+
+        /** Layout forced via API */
+        @Nullable
+        public LayoutPattern forcedLayout;
+    }
+
+    /**
+     * Data about a displayed layout.
+     */
+    @RequiredArgsConstructor
+    public static class LayoutData {
+
+        /** Layout view this data belongs to */
+        @NotNull
+        public final LayoutBase view;
+
+        /** Player's properties for fixed slot texts */
+        @NotNull
+        public final Map<FixedSlot, Property> fixedSlotTexts = new IdentityHashMap<>();
+
+        /** Player's properties for fixed slot skins */
+        @NotNull
+        public final Map<FixedSlot, Property> fixedSlotSkins = new IdentityHashMap<>();
+
+        /** Player's properties for fixed slot ping values */
+        @NotNull
+        public final Map<FixedSlot, Property> fixedSlotPings = new IdentityHashMap<>();
+    }
+}

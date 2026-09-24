@@ -1,0 +1,451 @@
+package dev.havoc.havoctab.shared.features.globalplayerlist;
+
+import lombok.Getter;
+import dev.havoc.havoctab.shared.ProtocolVersion;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.TabConstants;
+import dev.havoc.havoctab.shared.cpu.ThreadExecutor;
+import dev.havoc.havoctab.shared.cpu.TimedCaughtTask;
+import dev.havoc.havoctab.shared.data.Server;
+import dev.havoc.havoctab.shared.data.ServerGroup;
+import dev.havoc.havoctab.shared.features.playerlist.PlayerList;
+import dev.havoc.havoctab.shared.features.proxy.ProxyPlayer;
+import dev.havoc.havoctab.shared.features.proxy.ProxySupport;
+import dev.havoc.havoctab.shared.features.types.*;
+import dev.havoc.havoctab.shared.platform.TabList;
+import dev.havoc.havoctab.api.integration.VanishIntegration;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import dev.havoc.havoctab.shared.util.OnlinePlayers;
+import dev.havoc.havoctab.shared.util.PerformanceUtil;
+import dev.havoc.havoctab.shared.util.DumpUtils;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.*;
+
+/**
+ * Feature handler for global PlayerList feature.
+ */
+public class GlobalPlayerList extends RefreshableFeature implements JoinListener, QuitListener, VanishListener, GameModeListener,
+        Loadable, UnLoadable, ServerSwitchListener, TabListClearListener, CustomThreaded, ProxyFeature, Dumpable {
+
+    @Getter private final ThreadExecutor customThread = new ThreadExecutor("HavocTab Global PlayerList Thread");
+    @Getter private OnlinePlayers onlinePlayers;
+    @Nullable private final ProxySupport proxy = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PROXY_SUPPORT);
+    @NotNull private final GlobalPlayerListConfiguration configuration;
+    @Nullable private final PlayerList playerlist = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PLAYER_LIST);
+
+    /**
+     * Constructs new instance and registers new placeholders.
+     *
+     * @param   configuration
+     *          Feature configuration
+     */
+    public GlobalPlayerList(@NotNull GlobalPlayerListConfiguration configuration) {
+        this.configuration = configuration;
+        for (Map.Entry<String, List<String>> entry : configuration.getSharedServers().entrySet()) {
+            HavocTab.getInstance().getPlaceholderManager().registerServerPlaceholder(TabConstants.Placeholder.globalPlayerListGroup(entry.getKey()), 1000, () -> {
+                if (onlinePlayers == null) return "0"; // Not loaded yet
+                int count = 0;
+                for (TabPlayer player : onlinePlayers.getPlayers()) {
+                    if (matchesAnyPattern(player.server.getName(), entry.getValue()) && !player.isVanished()) count++;
+                }
+                if (proxy != null) {
+                    for (ProxyPlayer player : proxy.getProxyPlayers().values()) {
+                        if (matchesAnyPattern(player.server.getName(), entry.getValue()) && !player.isVanished()) count++;
+                    }
+                }
+                return PerformanceUtil.toString(count);
+            });
+        }
+    }
+
+    @Override
+    public void load() {
+        onlinePlayers =  new OnlinePlayers(HavocTab.getInstance().getOnlinePlayers());
+        if (configuration.isUpdateLatency()) addUsedPlaceholder(TabConstants.Placeholder.PING);
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            for (TabPlayer displayed : onlinePlayers.getPlayers()) {
+                if (viewer.server == displayed.server) continue;
+                if (shouldSee(viewer, displayed)) {
+                    viewer.getTabList().addEntry(getAddInfoData(displayed, viewer));
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns {@code true} if viewer should see the target player, {@code false} if not.
+     *
+     * @param   viewer
+     *          Player viewing the tablist
+     * @param   displayed
+     *          Player who is being displayed
+     * @return  {@code true} if viewer should see the target, {@code false} if not
+     */
+    public boolean shouldSee(@NotNull TabPlayer viewer, @NotNull TabPlayer displayed) {
+        return viewer.server.canSee(displayed.server) && viewer.canSee(displayed);
+    }
+
+    @Override
+    public void unload() {
+        for (TabPlayer displayed : onlinePlayers.getPlayers()) {
+            for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+                if (displayed.server != viewer.server) viewer.getTabList().removeEntry(displayed.getTablistId());
+            }
+        }
+    }
+
+    @Override
+    public void onJoin(@NotNull TabPlayer connectedPlayer) {
+        onlinePlayers.addPlayer(connectedPlayer);
+        for (TabPlayer all : onlinePlayers.getPlayers()) {
+            if (connectedPlayer.server == all.server) continue;
+            if (shouldSee(all, connectedPlayer)) {
+                all.getTabList().addEntry(getAddInfoData(connectedPlayer, all));
+            }
+            if (shouldSee(connectedPlayer, all)) {
+                connectedPlayer.getTabList().addEntry(getAddInfoData(all, connectedPlayer));
+            }
+        }
+        if (proxy != null) {
+            for (ProxyPlayer proxied : proxy.getProxyPlayers().values()) {
+                if (proxied.server != connectedPlayer.server && shouldSee(connectedPlayer, proxied)) {
+                    connectedPlayer.getTabList().addEntry(proxied.asEntry());
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onQuit(@NotNull TabPlayer disconnectedPlayer) {
+        onlinePlayers.removePlayer(disconnectedPlayer);
+        for (TabPlayer all : onlinePlayers.getPlayers()) {
+            if (disconnectedPlayer.server == all.server) continue; // Already removed by server itself
+            all.getTabList().removeEntry(disconnectedPlayer.getTablistId());
+        }
+    }
+
+    @Override
+    public void onServerChange(@NotNull TabPlayer changed, @NotNull Server from, @NotNull Server to) {
+        // TODO fix players potentially not appearing on rapid server switching (if anyone reports it)
+        // Player who switched server is removed from tablist of other players in ~70-110ms (depending on online count), re-add with a delay
+        customThread.executeLater(new TimedCaughtTask(HavocTab.getInstance().getCpu(), () -> {
+            if (!changed.isOnline()) return; // Player disconnected in the meantime
+            for (TabPlayer all : onlinePlayers.getPlayers()) {
+                // Remove for everyone and add back if visible, easy solution to display-others-as-spectators option
+                // Also do not remove/add players from the same server, let backend handle it
+                if (all.server != changed.server) {
+                    all.getTabList().removeEntry(changed.getTablistId());
+                    if (shouldSee(all, changed)) {
+                        all.getTabList().addEntry(getAddInfoData(changed, all));
+                    }
+                }
+            }
+        }, getFeatureName(), TabConstants.CpuUsageCategory.SERVER_SWITCH), 200);
+    }
+
+    @Override
+    public void onTabListClear(@NotNull TabPlayer player) {
+        for (TabPlayer all : onlinePlayers.getPlayers()) {
+            // Ignore players on the same server, since the server already sends add packet
+            if (all.server != player.server && shouldSee(player, all)) {
+                player.getTabList().addEntry(getAddInfoData(all, player));
+            }
+        }
+        if (proxy != null) {
+            for (ProxyPlayer proxied : proxy.getProxyPlayers().values()) {
+                if (proxied.server != player.server && shouldSee(player, proxied)) {
+                    player.getTabList().addEntry(proxied.asEntry());
+                }
+            }
+        }
+    }
+
+    /**
+     * Creates new entry of given target player for viewer.
+     *
+     * @param   p
+     *          Displayed player
+     * @param   viewer
+     *          Player viewing the tablist
+     * @return  Entry of target for viewer
+     */
+    @NotNull
+    public TabList.Entry getAddInfoData(@NotNull TabPlayer p, @NotNull TabPlayer viewer) {
+        TabComponent format = null;
+        if (playerlist != null && !p.tablistData.disabled.get()) {
+            format = playerlist.getTabFormat(p, viewer);
+        }
+        return new TabList.Entry(
+                p.getTablistId(),
+                p.getNickname(),
+                p.getTabList().getSkin(),
+                true,
+                configuration.isUpdateLatency() ? p.getPing() : 0,
+                configuration.isOthersAsSpectators() || (configuration.isVanishedAsSpectators() && p.isVanished()) ? 3 : p.getGamemode(),
+                viewer.getVersion().getNetworkId() >= ProtocolVersion.V1_8.getNetworkId() ? format : null,
+                0,
+                true
+        );
+    }
+
+    @Override
+    public void onGameModeChange(@NotNull TabPlayer player) {
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (player.server != viewer.server && viewer.server.canSee(player.server)) {
+                viewer.getTabList().updateGameMode(player, configuration.isOthersAsSpectators() ? 3 : player.getGamemode());
+            }
+        }
+    }
+
+    @Override
+    public void onVanishStatusChange(@NotNull TabPlayer p) {
+        if (p.isVanished()) {
+            for (TabPlayer all : onlinePlayers.getPlayers()) {
+                if (all == p) continue;
+                if (!shouldSee(all, p)) {
+                    all.getTabList().removeEntry(p.getTablistId());
+                }
+            }
+        } else {
+            for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+                if (viewer == p) continue;
+                if (shouldSee(viewer, p)) {
+                    viewer.getTabList().addEntry(getAddInfoData(p, viewer));
+                }
+            }
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getRefreshDisplayName() {
+        return "Updating latency";
+    }
+
+    @Override
+    public void refresh(@NotNull TabPlayer refreshed, boolean force) {
+        //player ping changed, must manually update latency for players on other servers
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (refreshed.server != viewer.server && viewer.server.canSee(refreshed.server)) {
+                viewer.getTabList().updateLatency(refreshed, refreshed.getPing());
+            }
+        }
+    }
+
+    private boolean shouldSee(@NotNull TabPlayer viewer, @NotNull ProxyPlayer target) {
+        // Do not show duplicate player that will be removed in a sec
+        if (HavocTab.getInstance().isPlayerConnected(target.getTablistId())) return false;
+        return viewer.server.canSee(target.server) && (!target.isVanished() || viewer.hasPermission(TabConstants.Permission.SEE_VANISHED));
+    }
+
+    // ------------------
+    // ProxySupport
+    // ------------------
+
+    @Override
+    public void onJoin(@NotNull ProxyPlayer player) {
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (shouldSee(viewer, player) && viewer.server != player.server) {
+                viewer.getTabList().addEntry(player.asEntry());
+            }
+        }
+    }
+
+    @Override
+    public void onServerSwitch(@NotNull ProxyPlayer player) {
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            if (viewer.server == player.server) continue;
+            if (shouldSee(viewer, player)) {
+                viewer.getTabList().addEntry(player.asEntry());
+            } else {
+                viewer.getTabList().removeEntry(player.getTablistId());
+            }
+        }
+    }
+
+    @Override
+    public void onQuit(@NotNull ProxyPlayer player) {
+        TabPlayer connected = HavocTab.getInstance().getPlayer(player.getUniqueId());
+        for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+            // Make sure to not remove player if they are connected already and added into tablist by the server
+            if (player.server != viewer.server && (connected == null || !shouldSee(viewer, connected))) {
+                viewer.getTabList().removeEntry(player.getTablistId());
+            }
+        }
+    }
+
+    @Override
+    public void onVanishStatusChange(@NotNull ProxyPlayer player) {
+        if (player.isVanished()) {
+            for (TabPlayer all : onlinePlayers.getPlayers()) {
+                if (!shouldSee(all, player)) {
+                    all.getTabList().removeEntry(player.getTablistId());
+                }
+            }
+        } else {
+            for (TabPlayer viewer : onlinePlayers.getPlayers()) {
+                if (shouldSee(viewer, player)) {
+                    viewer.getTabList().addEntry(player.asEntry());
+                }
+            }
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getFeatureName() {
+        return "Global PlayerList";
+    }
+
+    /**
+     * Checks if a server name matches any of the given patterns. Supports:
+     * - Exact match: "lobby"
+     * - Prefix wildcard: "lobby*"
+     * - Suffix wildcard: "*lobby"
+     * - Regex pattern: "regex:lobby-[0-9]+"
+     *
+     * @param   serverName
+     *          Server name to check
+     * @param   patterns
+     *          List of patterns to match against
+     * @return  {@code true} if server name matches any pattern, {@code false} otherwise
+     */
+    private boolean matchesAnyPattern(@NotNull String serverName, @NotNull List<String> patterns) {
+        for (String pattern : patterns) {
+            if (HavocTab.getInstance().getDataManager().matchesPattern(serverName, pattern)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    @NotNull
+    public Object dump(@NotNull TabPlayer player) {
+        Map<String, Object> playerInfo = new LinkedHashMap<>();
+        playerInfo.put("server", player.server.getName());
+        playerInfo.put("server is spy server", player.server.isSpyServer());
+        playerInfo.put("server group", player.server.getServerGroup().getName());
+        playerInfo.put("servers in the group", player.server.getServerGroup().getPatterns());
+
+        List<List<String>> rows = new ArrayList<>();
+        List<TabPlayer> targets = new ArrayList<>(Arrays.asList(HavocTab.getInstance().getOnlinePlayers()));
+        targets.sort(Comparator.comparing(TabPlayer::getName, String.CASE_INSENSITIVE_ORDER));
+        for (TabPlayer t : targets) {
+            String msg = getShouldSeeMessage(t, player);
+            rows.add(Arrays.asList(
+                    t.getName(),
+                    t.server.getName(),
+                    t.server.getServerGroup().getName(),
+                    msg
+            ));
+        }
+        if (proxy != null) {
+            List<ProxyPlayer> proxyTargets = new ArrayList<>(proxy.getProxyPlayers().values());
+            proxyTargets.sort(Comparator.comparing(ProxyPlayer::getName, String.CASE_INSENSITIVE_ORDER));
+            for (ProxyPlayer t : proxyTargets) {
+                String msg = getShouldSeeMessage(t, player);
+                rows.add(Arrays.asList(
+                        "[Proxy] " + t.getName(),
+                        t.server.getName(),
+                        t.server.getServerGroup().getName(),
+                        msg
+                ));
+            }
+        }
+        playerInfo.put("visibility from viewer's perspective", DumpUtils.tableToLines(
+                Arrays.asList("Player", "Server", "Server Group", "Visible for " + player.getName()),
+                rows
+        ));
+
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("configuration", configuration.getSection().getMap());
+        map.put("player info", playerInfo);
+        return map;
+    }
+
+    /**
+     * Returns a message about whether viewer can see target player or not and why.
+     *
+     * @param   target
+     *          Target player to see
+     * @param   viewer
+     *          Tablist viewer
+     * @return  Message about whether viewer can see target player or not and why
+     */
+    @NotNull
+    private String getShouldSeeMessage(@NotNull TabPlayer target, @NotNull TabPlayer viewer) {
+        if (viewer == target) return "yes - same player";
+
+        if (!viewer.server.canSee(target.server)) {
+            return "no - servers are in different groups (viewer=" + viewer.server.getServerGroup().getName() +
+                    ", target=" + target.server.getServerGroup().getName() + ") and viewer is not in a spy server";
+        }
+        for (VanishIntegration i : VanishIntegration.getHandlers()) {
+            try {
+                if (!i.canSee(viewer, target)) {
+                    return "no - vanish integration '" + i.getPlugin() + "' prevents viewer from seeing target";
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (target.isVanished() && !viewer.hasPermission(TabConstants.Permission.SEE_VANISHED)) {
+            return "no - target is vanished and viewer lacks permission (" + TabConstants.Permission.SEE_VANISHED + ")";
+        }
+
+        if (viewer.server == target.server) {
+            return "yes - same server (" + viewer.server.getName() + ")";
+        }
+        if (viewer.server.isSpyServer()) {
+            return "yes - viewer is in spy server (" + viewer.server.getName() + ")";
+        }
+        if (viewer.server.getServerGroup() == target.server.getServerGroup()) {
+            if (viewer.server.getServerGroup() == ServerGroup.DEFAULT) {
+                return "yes - both servers are not listed in any group, so they are put in a default shared group";
+            } else {
+                return "yes - same server group (" + viewer.server.getServerGroup().getName() + ")";
+            }
+        }
+
+        return "You should never see this message";
+    }
+
+    /**
+     * Returns a message about whether viewer can see target player or not and why.
+     *
+     * @param   target
+     *          Target player to see
+     * @param   viewer
+     *          Tablist viewer
+     * @return  Message about whether viewer can see target player or not and why
+     */
+    @NotNull
+    private String getShouldSeeMessage(@NotNull ProxyPlayer target, @NotNull TabPlayer viewer) {
+        if (!viewer.server.canSee(target.server)) {
+            return "no - servers are in different groups (viewer=" + viewer.server.getServerGroup().getName() +
+                    ", target=" + target.server.getServerGroup().getName() + ") and viewer is not in a spy server";
+        }
+        if (target.isVanished() && !viewer.hasPermission(TabConstants.Permission.SEE_VANISHED)) {
+            return "no - target is vanished and viewer lacks permission (" + TabConstants.Permission.SEE_VANISHED + ")";
+        }
+
+        if (viewer.server == target.server) {
+            return "yes - same server (" + viewer.server.getName() + ")";
+        }
+        if (viewer.server.isSpyServer()) {
+            return "yes - viewer is in spy server (" + viewer.server.getName() + ")";
+        }
+        if (viewer.server.getServerGroup() == target.server.getServerGroup()) {
+            if (viewer.server.getServerGroup() == ServerGroup.DEFAULT) {
+                return "yes - both servers are not listed in any group, so they are put in a default shared group";
+            } else {
+                return "yes - same server group (" + viewer.server.getServerGroup().getName() + ")";
+            }
+        }
+
+        return "You should never see this message";
+    }
+}

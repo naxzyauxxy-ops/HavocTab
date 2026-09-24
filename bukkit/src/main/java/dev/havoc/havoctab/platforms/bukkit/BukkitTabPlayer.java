@@ -1,0 +1,116 @@
+package dev.havoc.havoctab.platforms.bukkit;
+
+import dev.havoc.havoctab.platforms.bukkit.hook.LibsDisguisesHook;
+import dev.havoc.havoctab.platforms.bukkit.platform.BukkitPlatform;
+import dev.havoc.havoctab.shared.backend.BackendTabPlayer;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import org.bukkit.Statistic;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.entity.Player;
+import org.bukkit.metadata.MetadataValue;
+import org.bukkit.potion.PotionEffectType;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+/**
+ * TabPlayer implementation for Bukkit platform
+ */
+@SuppressWarnings("deprecation")
+public class BukkitTabPlayer extends BackendTabPlayer {
+
+    /** Below name distance attribute (26.1+) */
+    @Nullable
+    private static Attribute BELOW_NAME_DISTANCE;
+
+    static {
+        try {
+            BELOW_NAME_DISTANCE = (Attribute) Attribute.class.getDeclaredField("BELOW_NAME_DISTANCE").get(null);
+        } catch (Throwable e) {
+            // 1.21.11 and lower
+        }
+    }
+
+    /**
+     * Constructs new instance with given bukkit player
+     *
+     * @param   platform
+     *          Server platform
+     * @param   p
+     *          bukkit player
+     */
+    public BukkitTabPlayer(@NotNull BukkitPlatform platform, @NotNull Player p) {
+        super(platform, p, p.getUniqueId(), p.getName(), p.getWorld().getName(), platform.getServerVersionInfo().getServerVersion().getNetworkId());
+    }
+
+    @Override
+    public boolean hasPermission(@NotNull String permission) {
+        return getPlayer().hasPermission(permission);
+    }
+
+    @Override
+    public int getPing() {
+        return getPlatform().getServerVersionInfo().getImplementationProvider().getPing(this);
+    }
+
+    @Override
+    public void sendMessage(@NotNull TabComponent message) {
+        getPlayer().sendMessage(getPlatform().toBukkitFormat(message));
+    }
+
+    @Override
+    public boolean hasInvisibilityPotion() {
+        return getPlayer().hasPotionEffect(PotionEffectType.INVISIBILITY);
+    }
+
+    @Override
+    public boolean isDisguised() {
+        return LibsDisguisesHook.isDisguised(this);
+    }
+
+    @Override
+    @NotNull
+    public Player getPlayer() {
+        return (Player) player;
+    }
+
+    @Override
+    public BukkitPlatform getPlatform() {
+        return (BukkitPlatform) platform;
+    }
+
+    @Override
+    public void setBelowNameDistance(double distance) {
+        if (BELOW_NAME_DISTANCE != null) {
+            getPlayer().getAttribute(BELOW_NAME_DISTANCE).setBaseValue(distance);
+        }
+    }
+
+    @Override
+    public boolean isVanished0() {
+        for (MetadataValue v : getPlayer().getMetadata("vanished")) {
+            if (v.asBoolean()) return true;
+        }
+        return false;
+    }
+
+    @Override
+    public int getDeaths() {
+        return getPlayer().getStatistic(Statistic.DEATHS);
+    }
+
+    @Override
+    public int getGamemode() {
+        return getPlayer().getGameMode().getValue();
+    }
+
+    @Override
+    public double getHealth() {
+        return getPlayer().getHealth();
+    }
+
+    @Override
+    @NotNull
+    public String getDisplayName() {
+        return getPlayer().getDisplayName();
+    }
+}

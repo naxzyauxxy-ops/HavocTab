@@ -1,0 +1,115 @@
+package dev.havoc.havoctab.shared.features.playerlist;
+
+import com.google.common.io.ByteArrayDataInput;
+import com.google.common.io.ByteArrayDataOutput;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.ToString;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import dev.havoc.havoctab.shared.features.proxy.ProxyPlayer;
+import dev.havoc.havoctab.shared.features.proxy.ProxySupport;
+import dev.havoc.havoctab.shared.features.proxy.QueuedData;
+import dev.havoc.havoctab.shared.features.proxy.message.ProxyMessage;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.UUID;
+
+/**
+ * Proxy message to update tablist format of a player.
+ */
+@AllArgsConstructor
+@ToString(exclude = {"feature", "formatComponent"} )
+@Getter
+public class PlayerListProxyPlayerData extends ProxyMessage {
+
+    /** Feature instance to use for processing */
+    @NotNull private final PlayerList feature;
+
+    /** Unique ID of this data, higher means newer, to avoid wrong packet order messing things up */
+    private final long id;
+
+    /** Player's unique ID */
+    @NotNull private final UUID playerId;
+
+    /** Player's name */
+    @NotNull private final String player;
+
+    /** tabprefix */
+    @NotNull private final String prefix;
+
+    /** customtabname */
+    @NotNull private final String name;
+
+    /** tabsuffix */
+    @NotNull private final String suffix;
+
+    /** TabComponent of the format (parsed version of prefix + name + suffix) */
+    @NotNull private final TabComponent formatComponent;
+
+    /** Whether the player has the feature disabled with condition or not */
+    private final boolean disabled;
+
+    /**
+     * Creates new instance and reads data from byte input.
+     *
+     * @param   in
+     *          Input stream to read from
+     * @param   feature
+     *          Feature instance to use for processing
+     */
+    public PlayerListProxyPlayerData(@NotNull ByteArrayDataInput in, @NotNull PlayerList feature) {
+        this.feature = feature;
+        id = in.readLong();
+        playerId = readUUID(in);
+        player = in.readUTF();
+        prefix = in.readUTF();
+        name = in.readUTF();
+        suffix = in.readUTF();
+        formatComponent = feature.getCache().get(prefix + name + suffix);
+        disabled = in.readBoolean();
+    }
+
+    @Override
+    public void write(@NotNull ByteArrayDataOutput out) {
+        out.writeLong(id);
+        writeUUID(out, playerId);
+        out.writeUTF(player);
+        out.writeUTF(prefix);
+        out.writeUTF(name);
+        out.writeUTF(suffix);
+        out.writeBoolean(disabled);
+    }
+
+    @Override
+    public void process(@NotNull ProxySupport proxySupport) {
+        ProxyPlayer target = proxySupport.getProxyPlayers().get(playerId);
+        if (target == null) {
+            unknownPlayer(playerId.toString(), "tablist format update");
+            QueuedData data = proxySupport.getQueuedData().computeIfAbsent(playerId, k -> new QueuedData());
+            if (data.getTabFormat() == null || data.getTabFormat().id < id)  {
+                data.setTabFormat(this);
+            }
+            return;
+        }
+        if (target.getTabFormat() != null && target.getTabFormat().id > id) {
+            HavocTab.getInstance().debug("Dropping tabformat update action for player " + target.getName() + " due to newer action already being present");
+            return;
+        }
+        PlayerListProxyPlayerData oldData = target.getTabFormat();
+
+        target.setTabFormat(this);
+        if (target.getConnectionState() == ProxyPlayer.ConnectionState.CONNECTED) {
+            if (disabled) {
+                if (!oldData.disabled) {
+                    for (TabPlayer viewer : HavocTab.getInstance().getOnlinePlayers()) {
+                        viewer.getTabList().updateDisplayName(target.getTablistId(), null);
+                    }
+                }
+                return;
+            }
+            feature.formatPlayerForEveryone(target);
+        }
+    }
+}

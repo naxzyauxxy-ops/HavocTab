@@ -1,0 +1,316 @@
+package dev.havoc.havoctab.shared.features.bossbar;
+
+import lombok.Getter;
+import lombok.NonNull;
+import dev.havoc.havoctab.api.bossbar.BarColor;
+import dev.havoc.havoctab.api.bossbar.BarStyle;
+import dev.havoc.havoctab.api.bossbar.BossBar;
+import dev.havoc.havoctab.api.bossbar.BossBarManager;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.cpu.ThreadExecutor;
+import dev.havoc.havoctab.shared.cpu.TimedCaughtTask;
+import dev.havoc.havoctab.shared.features.ToggleManager;
+import dev.havoc.havoctab.shared.features.bossbar.BossBarConfiguration.BossBarDefinition;
+import dev.havoc.havoctab.shared.features.types.*;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import dev.havoc.havoctab.shared.util.cache.StringToComponentCache;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Class for handling BossBar feature
+ */
+public class BossBarManagerImpl extends RefreshableFeature implements BossBarManager, JoinListener, Loadable,
+        QuitListener, CustomThreaded, Dumpable {
+
+    @Getter private final StringToComponentCache cache = new StringToComponentCache("BossBar", 1000);
+    @Getter private final ThreadExecutor customThread = new ThreadExecutor("HavocTab BossBar Thread");
+
+    //registered BossBars
+    private final Map<String, BossBarLine> registeredBossBars = new LinkedHashMap<>();
+    protected BossBarLine[] lineValues;
+
+    //config options
+    @Getter private final BossBarConfiguration configuration;
+    private final String toggleOnMessage = HavocTab.getInstance().getConfiguration().getMessages().getBossBarOn();
+    private final String toggleOffMessage = HavocTab.getInstance().getConfiguration().getMessages().getBossBarOff();
+
+    /** Manager for toggled players if remembering is enabled in config */
+    @Nullable
+    private ToggleManager toggleManager;
+
+    /**
+     * Constructs new instance.
+     *
+     * @param   configuration
+     *          Feature configuration
+     */
+    public BossBarManagerImpl(@NonNull BossBarConfiguration configuration) {
+        this.configuration = configuration;
+        if (configuration.isRememberToggleChoice()) {
+            toggleManager = new ToggleManager(HavocTab.getInstance().getConfiguration().getPlayerData(), "bossbar-off");
+        }
+        for (Map.Entry<String, BossBarDefinition> entry : configuration.getBars().entrySet()) {
+            String name = entry.getKey();
+            registeredBossBars.put(name, new BossBarLine(this, name, entry.getValue()));
+        }
+        lineValues = registeredBossBars.values().toArray(new BossBarLine[0]);
+    }
+
+    @Override
+    public void load() {
+        HavocTab.getInstance().getPlatform().registerCustomCommand(configuration.getToggleCommand().replaceFirst("/", ""), (p, args) -> {
+            if (!isActive()) return;
+            String[] forwardedArgs;
+            if (args.length == 0) {
+                forwardedArgs = new String[]{"bossbar", "toggle"};
+            } else {
+                forwardedArgs = new String[args.length + 2];
+                forwardedArgs[0] = "bossbar";
+                forwardedArgs[1] = "toggle";
+                System.arraycopy(args, 0, forwardedArgs, 2, args.length);
+            }
+            HavocTab.getInstance().getCommand().execute(p, forwardedArgs);
+        });
+        for (TabPlayer p : HavocTab.getInstance().getOnlinePlayers()) {
+            onJoin(p);
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getRefreshDisplayName() {
+        return "Updating display conditions";
+    }
+
+    @Override
+    public void refresh(@NotNull TabPlayer p, boolean force) {
+        if (!hasBossBarVisible(p)) return;
+        boolean conditionResultChange = false;
+        for (BossBarLine line : lineValues) {
+            if (line.isConditionMet(p) != p.bossbarData.visibleBossBars.containsKey(line))
+                conditionResultChange = true;
+        }
+        if (conditionResultChange) {
+            for (BossBar line : lineValues) {
+                line.removePlayer(p); //remove all BossBars and then resend them again to keep them displayed in defined order
+            }
+            showBossBars(p);
+        }
+    }
+
+    @Override
+    public void onJoin(@NotNull TabPlayer connectedPlayer) {
+        connectedPlayer.expansionData.setBossBarVisible(false);
+        if (toggleManager != null) toggleManager.convert(connectedPlayer);
+        setBossBarVisible(connectedPlayer, configuration.isHiddenByDefault() == (toggleManager != null && toggleManager.contains(connectedPlayer)), false);
+    }
+
+    /**
+     * Clears and resends all BossBars to specified player
+     *
+     * @param   p
+     *          player to process
+     */
+    protected void detectBossBarsAndSend(@NonNull TabPlayer p) {
+        if (!hasBossBarVisible(p)) return;
+        showBossBars(p);
+    }
+
+    /**
+     * Shows all boss bars the player should see and does not see already.
+     *
+     * @param   p
+     *          Player to show boss bars to
+     */
+    private void showBossBars(@NonNull TabPlayer p) {
+        for (BossBarLine bossbar : lineValues) {
+            if (bossbar.isConditionMet(p)) {
+                if (!bossbar.isAnnouncementBar() || bossbar.isBeingAnnounced()) {
+                    bossbar.addPlayer(p);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onQuit(@NotNull TabPlayer disconnectedPlayer) {
+        for (BossBarLine line : lineValues) {
+            line.removePlayerRaw(disconnectedPlayer);
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getFeatureName() {
+        return "BossBar";
+    }
+
+    // ------------------
+    // API Implementation
+    // ------------------
+
+    @Override
+    @NotNull
+    public BossBar createBossBar(@NonNull String title, float progress, @NonNull BarColor color, @NonNull BarStyle style) {
+        ensureActive();
+        return createBossBar(title, String.valueOf(progress), color.toString(), style.toString());
+    }
+
+    @Override
+    @NotNull
+    public BossBar createBossBar(@NonNull String title, @NonNull String progress, @NonNull String color, @NonNull String style) {
+        ensureActive();
+        UUID id = UUID.randomUUID();
+        BossBarLine bar = new BossBarLine(this, id.toString(), new BossBarDefinition(style, color, progress, title, true, null));
+        registeredBossBars.put(id.toString(), bar);
+        lineValues = registeredBossBars.values().toArray(new BossBarLine[0]);
+        return bar;
+    }
+
+    @Override
+    public BossBar getBossBar(@NonNull String name) {
+        ensureActive();
+        return registeredBossBars.get(name);
+    }
+
+    @Override
+    @NotNull
+    public Map<String, BossBar> getRegisteredBossBars() {
+        return Collections.unmodifiableMap(registeredBossBars);
+    }
+
+    @Override
+    public void removeBossBar(@NonNull String name) {
+        ensureActive();
+        BossBar bar = registeredBossBars.remove(name);
+        if (bar == null) throw new IllegalArgumentException("No registered BossBar found with name " + name);
+        lineValues = registeredBossBars.values().toArray(new BossBarLine[0]);
+        for (TabPlayer player : HavocTab.getInstance().getOnlinePlayers()) {
+            bar.removePlayer(player);
+            player.bossbarData.visibleBossBars.remove(bar);
+        }
+    }
+
+    @Override
+    public void removeBossBar(@NonNull BossBar bossBar) {
+        ensureActive();
+        BossBarLine bar = (BossBarLine) bossBar;
+        if (!registeredBossBars.remove(bar.getName(), bar)) {
+            throw new IllegalArgumentException("This bossbar (" + bar.getName() + ") is not registered.");
+        }
+        lineValues = registeredBossBars.values().toArray(new BossBarLine[0]);
+        for (TabPlayer player : HavocTab.getInstance().getOnlinePlayers()) {
+            bar.removePlayer(player);
+            player.bossbarData.visibleBossBars.remove(bar);
+        }
+    }
+
+    @Override
+    public void toggleBossBar(@NonNull dev.havoc.havoctab.api.TabPlayer player, boolean sendToggleMessage) {
+        ensureActive();
+        setBossBarVisible(player, !hasBossBarVisible(player), sendToggleMessage);
+    }
+
+    @Override
+    public boolean hasBossBarVisible(@NonNull dev.havoc.havoctab.api.TabPlayer player) {
+        ensureActive();
+        return ((TabPlayer)player).bossbarData.visible;
+    }
+
+    @Override
+    public void setBossBarVisible(@NonNull dev.havoc.havoctab.api.TabPlayer p, boolean visible, boolean sendToggleMessage) {
+        ensureActive();
+        TabPlayer player = (TabPlayer) p;
+        if (player.bossbarData.visible == visible) return;
+        if (visible) {
+            player.bossbarData.visible = true;
+            detectBossBarsAndSend(player);
+            if (sendToggleMessage) player.sendMessage(toggleOnMessage);
+            if (toggleManager != null) {
+                if (configuration.isHiddenByDefault()) {
+                    toggleManager.add(player);
+                } else {
+                    toggleManager.remove(player);
+                }
+            }
+        } else {
+            player.bossbarData.visible = false;
+            for (BossBar l : lineValues) {
+                l.removePlayer(player);
+            }
+            if (sendToggleMessage) player.sendMessage(toggleOffMessage);
+            if (toggleManager != null) {
+                if (configuration.isHiddenByDefault()) {
+                    toggleManager.remove(player);
+                } else {
+                    toggleManager.add(player);
+                }
+            }
+        }
+        player.expansionData.setBossBarVisible(visible);
+    }
+
+    @Override
+    public void sendBossBarTemporarily(@NonNull dev.havoc.havoctab.api.TabPlayer player, @NonNull String bossBar, int duration) {
+        ensureActive();
+        BossBar line = registeredBossBars.get(bossBar);
+        if (line == null) throw new IllegalArgumentException("No registered BossBar found with name " + bossBar);
+        if (!hasBossBarVisible(player)) return;
+        customThread.execute(new TimedCaughtTask(HavocTab.getInstance().getCpu(), () -> line.addPlayer(player), getFeatureName(), "Adding temporary BossBar"));
+        customThread.executeLater(new TimedCaughtTask(HavocTab.getInstance().getCpu(), () -> {
+            if (((TabPlayer)player).isOnline()) line.removePlayer(player);
+        }, getFeatureName(), "Removing temporary BossBar"), duration*1000);
+    }
+
+    @Override
+    public void announceBossBar(@NonNull String bossBar, int duration) {
+        ensureActive();
+        BossBarLine line = registeredBossBars.get(bossBar);
+        if (line == null) throw new IllegalArgumentException("No registered BossBar found with name " + bossBar);
+        if (!line.isAnnouncementBar()) throw new IllegalArgumentException("BossBar " + bossBar + " is not an announcement bar");
+        customThread.execute(new TimedCaughtTask(HavocTab.getInstance().getCpu(), () -> line.announce(duration), getFeatureName(), "Adding announced BossBar"));
+        customThread.executeLater(new TimedCaughtTask(HavocTab.getInstance().getCpu(), line::unAnnounce, getFeatureName(), "Removing announced BossBar"), duration*1000);
+    }
+
+    @Override
+    @NotNull
+    public List<BossBar> getAnnouncedBossBars() {
+        return registeredBossBars.values().stream().filter(BossBarLine::isBeingAnnounced).collect(Collectors.toList());
+    }
+
+    @Override
+    @NotNull
+    public Object dump(@NotNull TabPlayer player) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("configuration", configuration.getSection().getMap());
+        map.put("bossbar conditions", new LinkedHashMap<String, Object>() {{
+            for (BossBarLine bar : lineValues) {
+                Map<String, Object> barMap = new LinkedHashMap<>();
+                barMap.put("display-condition", bar.getDisplayCondition() == null ? null : bar.getDisplayCondition().toShortFormat());
+                barMap.put("display-condition with placeholders parsed", bar.getDisplayCondition() == null ? null :
+                        HavocTab.getInstance().getPlaceholderManager().parsePlaceholders(bar.getDisplayCondition().toShortFormat(), player));
+                barMap.put("display-condition is null or met", bar.isConditionMet(player));
+                barMap.put("bossbar is displayed", bar.containsPlayer(player));
+                put(bar.getName(), barMap);
+            }
+        }});
+        map.put("bossbars visible (= not toggled by user)", player.bossbarData.visible);
+        map.put("currently displayed bossbars", new LinkedHashMap<String, Object>() {{
+            for (Map.Entry<BossBarLine, BossBarLinePlayerProperties> line : player.bossbarData.visibleBossBars.entrySet()) {
+                LinkedHashMap<String, Object> barInfo = new LinkedHashMap<>();
+                BossBarLine bar = line.getKey();
+                BossBarLinePlayerProperties properties = line.getValue();
+                barInfo.put("text", properties.textProperty.get());
+                barInfo.put("progress", properties.progressProperty.get());
+                barInfo.put("color", properties.colorProperty.get());
+                barInfo.put("style", properties.styleProperty.get());
+                put(bar.getName(), barInfo);
+            }
+        }});
+        return map;
+    }
+}

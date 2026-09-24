@@ -1,0 +1,87 @@
+package dev.havoc.havoctab.shared.features;
+
+import lombok.Getter;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.TabConstants;
+import dev.havoc.havoctab.shared.cpu.ThreadExecutor;
+import dev.havoc.havoctab.shared.features.types.*;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * Cancelling GameMode change packet to spectator GameMode to avoid players being moved on
+ * the bottom of TabList with transparent name. Does not work on self as that would result
+ * in players not being able to clip through walls.
+ */
+@Getter
+public class SpectatorFix extends TabFeature implements JoinListener, Loadable, UnLoadable, CustomThreaded, Dumpable {
+
+    private final ThreadExecutor customThread = new ThreadExecutor("HavocTab Spectator Fix Thread");
+
+    /**
+     * Sends GameMode update of all players to either their real GameMode if
+     * {@code realGameMode} is {@code true} or fake value if it's {@code false}.
+     *
+     * @param   viewer
+     *          Player to send gamemode updates to
+     * @param   realGameMode
+     *          Whether real GameMode should be shown or fake one
+     * @param   mutually
+     *          If target's view should be updated as well
+     */
+    private void updatePlayer(@NotNull TabPlayer viewer, boolean realGameMode, boolean mutually) {
+        for (TabPlayer target : HavocTab.getInstance().getOnlinePlayers()) {
+            if (viewer == target) continue;
+            if (!viewer.hasPermission(TabConstants.Permission.SPECTATOR_BYPASS)) {
+                if (realGameMode) {
+                    viewer.getTabList().unblockSpectator(target);
+                } else {
+                    viewer.getTabList().blockSpectator(target);
+                }
+            }
+            if (mutually && !target.hasPermission(TabConstants.Permission.SPECTATOR_BYPASS)) {
+                if (realGameMode) {
+                    target.getTabList().unblockSpectator(viewer);
+                } else {
+                    target.getTabList().blockSpectator(viewer);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onJoin(@NotNull TabPlayer p) {
+        updatePlayer(p, false, true);
+    }
+
+    @Override
+    public void load() {
+        for (TabPlayer viewer : HavocTab.getInstance().getOnlinePlayers()) {
+            updatePlayer(viewer, false, false);
+        }
+    }
+
+    @Override
+    public void unload() {
+        for (TabPlayer viewer : HavocTab.getInstance().getOnlinePlayers()) {
+            updatePlayer(viewer, true, false);
+        }
+    }
+
+    @NotNull
+    @Override
+    public String getFeatureName() {
+        return "Spectator fix";
+    }
+
+    @Override
+    @NotNull
+    public Object dump(@NotNull TabPlayer player) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("player has bypass permission", player.hasPermission(TabConstants.Permission.SPECTATOR_BYPASS));
+        return map;
+    }
+}

@@ -1,0 +1,44 @@
+package dev.havoc.havoctab.platforms.bukkit.v1_8_R3;
+
+import io.netty.channel.Channel;
+import lombok.SneakyThrows;
+import dev.havoc.havoctab.shared.platform.NettyTabListEntryTracker;
+import dev.havoc.havoctab.shared.util.ReflectionUtils;
+import net.minecraft.server.v1_8_R3.PacketPlayOutPlayerInfo;
+import net.minecraft.server.v1_8_R3.PacketPlayOutPlayerInfo.EnumPlayerInfoAction;
+import net.minecraft.server.v1_8_R3.PacketPlayOutPlayerInfo.PlayerInfoData;
+import org.jetbrains.annotations.NotNull;
+
+import java.lang.reflect.Field;
+import java.util.List;
+
+/**
+ * Implementation of TabListEntryTracker.
+ */
+public class NMSTabListEntryTracker extends NettyTabListEntryTracker {
+
+    private static final Field ACTION = ReflectionUtils.getOnlyField(PacketPlayOutPlayerInfo.class, EnumPlayerInfoAction.class);
+    private static final Field PLAYERS = ReflectionUtils.getOnlyField(PacketPlayOutPlayerInfo.class, List.class);
+
+    public NMSTabListEntryTracker(@NotNull Channel channel) {
+        super(channel);
+    }
+
+    @Override
+    @SneakyThrows
+    @SuppressWarnings("unchecked")
+    public void onPacketSend(@NotNull Object packet) {
+        if (packet instanceof PacketPlayOutPlayerInfo) {
+            PacketPlayOutPlayerInfo info = (PacketPlayOutPlayerInfo) packet;
+            EnumPlayerInfoAction action = (EnumPlayerInfoAction) ACTION.get(info);
+            for (PlayerInfoData nmsData : (List<PlayerInfoData>) PLAYERS.get(info)) {
+                if (action == EnumPlayerInfoAction.ADD_PLAYER) {
+                    tablistEntries.add(nmsData.a().getId());
+                }
+                if (action == EnumPlayerInfoAction.REMOVE_PLAYER) {
+                    tablistEntries.remove(nmsData.a().getId());
+                }
+            }
+        }
+    }
+}

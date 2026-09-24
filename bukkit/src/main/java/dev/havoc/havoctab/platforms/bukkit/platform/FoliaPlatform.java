@@ -1,0 +1,179 @@
+package dev.havoc.havoctab.platforms.bukkit.platform;
+
+import lombok.NonNull;
+import lombok.SneakyThrows;
+import me.clip.placeholderapi.PlaceholderAPI;
+import dev.havoc.havoctab.platforms.bukkit.features.PerWorldPlayerList;
+import dev.havoc.havoctab.shared.HavocTab;
+import dev.havoc.havoctab.shared.TabConstants;
+import dev.havoc.havoctab.shared.cpu.TimedCaughtTask;
+import dev.havoc.havoctab.shared.data.World;
+import dev.havoc.havoctab.shared.placeholders.types.PlayerPlaceholderImpl;
+import dev.havoc.havoctab.shared.platform.TabPlayer;
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.NotNull;
+
+import java.lang.reflect.Method;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+/**
+ * Platform override for Folia.
+ */
+public class FoliaPlatform extends BukkitPlatform {
+
+    /** Global tick thread scheduler */
+    @NotNull
+    private final Object globalScheduler;
+
+    /** FoliaGlobalRegionScheduler#execute(Plugin, Runnable) method */
+    private final Method globalScheduler_execute;
+
+    /**
+     * Constructs new instance with given plugin.
+     *
+     * @param   plugin
+     *          Plugin
+     */
+    @SneakyThrows
+    @SuppressWarnings("JavaReflectionMemberAccess")
+    public FoliaPlatform(@NotNull JavaPlugin plugin) {
+        super(plugin);
+        globalScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
+        globalScheduler_execute = globalScheduler.getClass().getMethod("execute", Plugin.class, Runnable.class);
+    }
+
+    @Override
+    public void loadPlayers() {
+        super.loadPlayers();
+
+        // Folia never calls PlayerChangedWorldEvent, this is a workaround
+        HavocTab.getInstance().getCpu().getProcessingThread().repeatTask(new TimedCaughtTask(HavocTab.getInstance().getCpu(), ()  -> {
+            for (TabPlayer player : HavocTab.getInstance().getOnlinePlayers()) {
+                World actualWorld = World.byName(((Player) player.getPlayer()).getWorld().getName());
+                if (player.world != actualWorld) {
+                    HavocTab.getInstance().getFeatureManager().onWorldChange(player.getUniqueId(), actualWorld);
+                    PerWorldPlayerList pwp = HavocTab.getInstance().getFeatureManager().getFeature(TabConstants.Feature.PER_WORLD_PLAYER_LIST);
+                    if (pwp != null) {
+                        runSync((Entity) player.getPlayer(), () -> pwp.onWorldChange(new PlayerChangedWorldEvent((Player) player.getPlayer(), ((Player) player.getPlayer()).getWorld())));
+                    }
+                }
+            }
+        }, "Folia compatibility", "Refreshing world"), 100);
+    }
+
+    @Override
+    public void registerPlaceholders() {
+        super.registerPlaceholders();
+        DecimalFormat decimal2;
+        DecimalFormatSymbols symbols = new DecimalFormatSymbols();
+        symbols.setDecimalSeparator('.');
+        decimal2 = new DecimalFormat("#.##", symbols);
+        registerInternalSyncPlaceholder(TabConstants.Placeholder.MSPT, p -> decimal2.format(Bukkit.getAverageTickTime()));
+        registerInternalSyncPlaceholder(TabConstants.Placeholder.TPS, p -> decimal2.format(Math.min(20, Bukkit.getTPS()[0])));
+    }
+
+    @Override
+    public void registerSyncPlaceholder(@NotNull String identifier) {
+        String syncedPlaceholder = "%" + identifier.substring(6);
+        PlayerPlaceholderImpl[] ppl = new PlayerPlaceholderImpl[1];
+        ppl[0] = HavocTab.getInstance().getPlaceholderManager().registerPlayerPlaceholder(identifier, p -> {
+            runSync((Entity) p.getPlayer(), () -> {
+                long time = System.nanoTime();
+                String output = isPlaceholderAPI() ? PlaceholderAPI.setPlaceholders((Player) p.getPlayer(), syncedPlaceholder) : identifier;
+                long totalTime =  System.nanoTime()-time;
+                HavocTab.getInstance().getCPUManager().addPlaceholderTime(identifier, totalTime);
+                HavocTab.getInstance().getCpu().addTime(HavocTab.getInstance().getPlaceholderManager().getFeatureName(), TabConstants.CpuUsageCategory.PLACEHOLDER_REQUEST, totalTime);
+                HavocTab.getInstance().getCPUManager().runTask(() -> ppl[0].updateValue(p, output)); // To ensure player is loaded
+            });
+            return null;
+        });
+    }
+
+    private void registerInternalSyncPlaceholder(@NonNull String identifier, @NonNull Function<TabPlayer, String> function) {
+        PlayerPlaceholderImpl[] ppl = new PlayerPlaceholderImpl[1];
+        ppl[0] = HavocTab.getInstance().getPlaceholderManager().registerPlayerPlaceholder(identifier, p -> {
+            runSync((Entity) p.getPlayer(), () -> {
+                long time = System.nanoTime();
+                String output = function.apply((TabPlayer) p);
+                long totalTime =  System.nanoTime()-time;
+                HavocTab.getInstance().getCPUManager().addPlaceholderTime(identifier, totalTime);
+                HavocTab.getInstance().getCpu().addTime(HavocTab.getInstance().getPlaceholderManager().getFeatureName(), TabConstants.CpuUsageCategory.PLACEHOLDER_REQUEST, totalTime);
+                HavocTab.getInstance().getCPUManager().runTask(() -> ppl[0].updateValue(p, output)); // To ensure player is loaded
+            });
+            return null;
+        });
+    }
+
+    /**
+     * Overriding the method to fix initial error caused by ServerPlaceholder implementation trying to
+     * retrieve the value in constructor, but folia does not support that. Overriding this function to avoid the
+     * MSPT function being called in the wrong thread.
+     *
+     * @return  -1
+     */
+    @Override
+    public double getMSPT() {
+        return -1;
+    }
+
+    /**
+     * Overriding the method to fix initial error caused by ServerPlaceholder implementation trying to
+     * retrieve the value in constructor, but folia does not support that. Overriding this function to avoid the
+     * TPS function being called in the wrong thread.
+     *
+     * @return  -1
+     */
+    @Override
+    public double getTPS() {
+        return -1;
+    }
+
+    /**
+     * Runs task using player's entity scheduler. It's using reflection, because
+     * Folia uses Java 17 while HavocTab maintains Java 8 compatibility for compatibility
+     * with MC versions older than their player base.
+     *
+     * @param   entity
+     *          entity to run task for
+     * @param   task
+     *          Task to run
+     */
+    @Override
+    @SneakyThrows
+    @SuppressWarnings("JavaReflectionMemberAccess")
+    public void runSync(@NotNull Entity entity, @NotNull Runnable task) {
+        if (!getPlugin().isEnabled()) return; // Server shutdown, no one cares anymore, everyone is about to be kicked
+        Object entityScheduler = Entity.class.getMethod("getScheduler").invoke(entity);
+        Consumer<?> consumer = $ -> task.run(); // Reflection and lambdas don't go together
+        entityScheduler.getClass().getMethod("run", Plugin.class, Consumer.class, Runnable.class)
+                .invoke(entityScheduler, getPlugin(), consumer, null);
+    }
+
+    /**
+     * Runs task in global tick thread. It's using reflection, because
+     * Folia uses Java 17 while HavocTab maintains Java 8 compatibility for compatibility
+     * with MC versions older than their player base.
+     *
+     * @param   task
+     *          Task to run
+     */
+    @Override
+    @SneakyThrows
+    public void runSyncGlobal(@NotNull Runnable task) {
+        if (!getPlugin().isEnabled()) return; // Server shutdown, no one cares anymore, everyone is about to be kicked
+        globalScheduler_execute.invoke(globalScheduler, getPlugin(), task);
+    }
+
+    @Override
+    public boolean hasLineOfSight(@NotNull TabPlayer viewer, @NotNull TabPlayer target) {
+        return true; // Cross-entity line-of-sight checks are not safe from Folia's global scheduler.
+    }
+}

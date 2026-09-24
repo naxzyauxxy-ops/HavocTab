@@ -1,0 +1,280 @@
+package dev.havoc.havoctab.shared.platform;
+
+import dev.havoc.havoctab.shared.GroupManager;
+import dev.havoc.havoctab.shared.chat.component.TabComponent;
+import dev.havoc.havoctab.shared.features.PerWorldPlayerListConfiguration;
+import dev.havoc.havoctab.shared.features.injection.PipelineInjector;
+import dev.havoc.havoctab.shared.features.proxy.ProxySupport;
+import dev.havoc.havoctab.shared.features.types.TabFeature;
+import dev.havoc.havoctab.shared.placeholders.expansion.EmptyTabExpansion;
+import dev.havoc.havoctab.shared.placeholders.expansion.TabExpansion;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.io.File;
+import java.util.Collections;
+import java.util.List;
+import java.util.function.BiConsumer;
+
+/**
+ * An interface with methods that are called in universal code,
+ * but require platform-specific API calls.
+ */
+public interface Platform {
+
+    /**
+     * Detects permission plugin and returns its representing object
+     *
+     * @return  the interface representing the permission hook
+     */
+    @NotNull GroupManager detectPermissionPlugin();
+
+    /**
+     * Creates an instance of {@link dev.havoc.havoctab.api.placeholder.Placeholder}
+     * to handle this unknown placeholder (typically a PAPI placeholder)
+     *
+     * @param   identifier
+     *          placeholder's identifier
+     */
+    void registerUnknownPlaceholder(@NotNull String identifier);
+
+    /**
+     * Detects additional placeholders in text using platform-specific syntax.
+     * On Velocity with MiniPlaceholders, this detects {@code <placeholder>} syntax.
+     *
+     * @param   text
+     *          text to detect placeholders in
+     * @return  list of detected placeholder identifiers
+     */
+    @NotNull
+    default List<String> detectAdditionalPlaceholders(@NotNull String text) {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Creates instance for all online players and adds them to the plugin
+     */
+    void loadPlayers();
+
+    /**
+     * Registers all placeholders, including universal and platform-specific ones
+     */
+    void registerPlaceholders();
+
+    /**
+     * Creates pipeline injection instance and returns it
+     *
+     * @return  new pipeline injection or null if not available
+     */
+    @Nullable PipelineInjector createPipelineInjector();
+
+    /**
+     * Creates tab expansion instance and returns it
+     *
+     * @return  Created expansion
+     */
+    default @NotNull TabExpansion createTabExpansion() {
+        return new EmptyTabExpansion();
+    }
+
+    /**
+     * Creates ProxySupport feature, registers listeners and returns it
+     *
+     * @param   plugin
+     *          Proxy plugin to use
+     * @param   channelName
+     *          Channel name to use
+     * @return  Created instance
+     */
+    @Nullable
+    ProxySupport getProxySupport(@NotNull String plugin, @NotNull String channelName);
+
+    /**
+     * Returns per world player list feature handler.
+     *
+     * @param   configuration
+     *          Feature configuration
+     * @return  Created feature or null if not available on platform
+     */
+    @Nullable TabFeature getPerWorldPlayerList(@NotNull PerWorldPlayerListConfiguration configuration);
+
+    /**
+     * Sends a console message with HavocTab's prefix using logger if available,
+     * otherwise platform's method for sending console message.
+     *
+     * @param   message
+     *          Message to send
+     */
+    void logInfo(@NotNull TabComponent message);
+
+    /**
+     * Sends a red console message with HavocTab's prefix using logger with warn type if available,
+     * otherwise platform's method for sending console message.
+     *
+     * @param   message
+     *          Message to send
+     */
+    void logWarn(@NotNull TabComponent message);
+
+    /**
+     * Registers event listener for platform's events
+     */
+    void registerListener();
+
+    /**
+     * Registers plugin's command
+     */
+    void registerCommand();
+
+    /**
+     * Starts metrics
+     */
+    void startMetrics();
+
+    /**
+     * Returns plugin's data folder for configuration files
+     *
+     * @return  plugin's data folder
+     */
+    File getDataFolder();
+
+    /**
+     * Returns {@code true} if this platform is a proxy, {@code false} if not.
+     *
+     * @return  {@code true} if this platform is a proxy, {@code false} if not
+     */
+    boolean isProxy();
+
+    /**
+     * Converts thhe HavocTab component into platform's component.
+     *
+     * @param   component
+     *          Component to convert
+     * @return  Converted component
+     */
+    @NotNull
+    Object convertComponent(@NotNull TabComponent component);
+
+    /**
+     * Creates new scoreboard instance for given player.
+     *
+     * @param   player
+     *          Player to create scoreboard for
+     * @return  Scoreboard implementation for given player
+     */
+    @NotNull
+    Scoreboard createScoreboard(@NotNull TabPlayer player);
+
+    /**
+     * Creates new bossbar instance for given player.
+     *
+     * @param   player
+     *          Player to create bossbar for
+     * @return  Bossbar implementation for given player
+     */
+    @NotNull
+    BossBar createBossBar(@NotNull TabPlayer player);
+
+    /**
+     * Creates new tablist instance for given player.
+     *
+     * @param   player
+     *          Player to create tablist for
+     * @return  TabList implementation for given player
+     */
+    @NotNull
+    TabList createTabList(@NotNull TabPlayer player);
+
+    /**
+     * Returns {@code true} if server has a scoreboard implementation, {@code false} if not.
+     *
+     * @return   {@code true} if server has a scoreboard implementation, {@code false} if not
+     */
+    boolean supportsScoreboards();
+
+    /**
+     * Returns {@code true} if server supports listed option (1.19.3+), {@code false} if not.
+     *
+     * @return   {@code true} if server supports listed option (1.19.3+), {@code false} if not
+     */
+    default boolean supportsListed() {
+        return true;
+    }
+
+    /**
+     * Returns {@code true} if server supports list order option (1.21.2+), {@code false} if not.
+     *
+     * @return   {@code true} if server supports list order option (1.21.2+), {@code false} if not
+     */
+    default boolean supportsListOrder() {
+        return true;
+    }
+
+    /**
+     * Returns {@code true} if the server is safe from being affected by the packetevents bug with limitations, {@code false} if not.
+     *
+     * @return  {@code true} if server is safe, {@code false} if not
+     */
+    default boolean isSafeFromPacketEventsBug() {
+        return true;
+    }
+
+    /**
+     * Returns the command string used by this platform without "/"
+     * prefix, such as "tab" on backend and "btab" on BungeeCord.
+     *
+     * @return  command string on this platform without "/" prefix
+     */
+    @NotNull
+    String getCommand();
+
+    /**
+     * Registers a custom command that executes the given function
+     * when a player uses it.
+     *
+     * @param   commandName
+     *          Name of the command without "/" prefix
+     * @param   function
+     *          Function to execute when a player uses the command
+     */
+    void registerCustomCommand(@NotNull String commandName, @NotNull BiConsumer<TabPlayer, String[]> function);
+
+    /**
+     * Unregisters all custom commands registered by features.
+     */
+    void unregisterAllCustomCommands();
+
+    /**
+     * Dumps data of the platform.
+     *
+     * @return  Dumped data
+     */
+    @NotNull
+    Object dump();
+
+    /**
+     * Runs task in the global server thread when the platform requires it.
+     * Platforms without a server thread requirement can run the task directly.
+     *
+     * @param   task
+     *          Task to run
+     */
+    default void runSyncGlobal(@NotNull Runnable task) {
+        task.run();
+    }
+
+    /**
+     * Returns {@code true} if the viewer has a clear line of sight to target.
+     * Platforms that cannot calculate block occlusion should return {@code true}
+     * after regular visibility checks are satisfied.
+     *
+     * @param   viewer
+     *          Viewer
+     * @param   target
+     *          Target being viewed
+     * @return  {@code true} if line of sight is clear, {@code false} if blocked
+     */
+    default boolean hasLineOfSight(@NotNull TabPlayer viewer, @NotNull TabPlayer target) {
+        return true;
+    }
+}
